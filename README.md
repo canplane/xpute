@@ -72,7 +72,7 @@ This is a copy. xpute is developed inside pixelet, a closed application that is 
 
 [plei.me](https://plei.me) is that application running, which is the only public view of this kit at work.
 
-Taken from **pixelet@142255f4**.
+Taken from **pixelet@788f74d6**.
 
 The four files generated from `spec/xpute/` — the errno table and the fetch ABI, on both sides — are checked in as pixelet generates them. The generator itself knows every one of pixelet's specs and did not come along, so this copy reads but does not regenerate them.
 
