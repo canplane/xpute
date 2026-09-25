@@ -23,7 +23,7 @@ It was written for a Rust program compiled to one WebAssembly module and driven 
            └─────────────────────────────────────────────────────┘
 ```
 
-Three edges, and no others: there is no second entry point, no callback, and nothing either side holds a pointer to on the other.
+Three edges, and one call the other way: the guest reads the host's clock (`now`), because it spends its quota against that clock in the middle of a turn, when the host cannot run. There is no second entry point, no other callback, and nothing either side holds a pointer to on the other.
 
 `interrupt` is the whole of the guest's life. It runs when the host rings, for as long as the quota it was handed, and when the call returns it is not running at all — its answer is when it would like the next one. A guest that asks for nothing is rung for nothing.
 
@@ -33,7 +33,7 @@ Two budgets run and they never touch: time for the guest's own work, and credits
 
 ## `core` and `runtime`
 
-`core` is a kit and nothing more — collections, codecs, maths over one libm, an errno table, the wire formats. Link it and use it: it knows nothing of turns, hosts or memories.
+`core` is a kit and nothing more — collections, codecs, math over one libm, an errno table, the wire formats. Link it and use it: it knows nothing of turns, hosts or memories.
 
 Golden records under `crates/xpute/core/golden/` hold the two languages to each other wherever bytes cross.
 
@@ -72,10 +72,10 @@ This is a copy. xpute is developed inside pixelet, a closed application that is 
 
 [plei.me](https://plei.me) is that application running, which is the only public view of this kit at work.
 
-Taken from **pixelet@788f74d6**.
+Taken from **pixelet@ff23d356**.
 
 The four files generated from `spec/xpute/` — the errno table and the fetch ABI, on both sides — are checked in as pixelet generates them. The generator itself knows every one of pixelet's specs and did not come along, so this copy reads but does not regenerate them.
 
-## Licence
+## License
 
-xpute is MIT. One file under `alloc/` is a port of someone else's code rather than a dependency, and `THIRD_PARTY_NOTICES.md` carries the notice its licence asks for.
+xpute is MIT. One file under `alloc/` is a port of someone else's code rather than a dependency, and `THIRD_PARTY_NOTICES.md` carries the notice its license asks for.

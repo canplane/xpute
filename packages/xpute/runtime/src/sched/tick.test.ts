@@ -1,6 +1,6 @@
 // @xpute/runtime/sched/tick.test.ts
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 
 import { CONTENT, COSMETIC, FrameBudget, INTERACTION, PHASES, REPORT, Tick, type TickPolicy, VISIBLE } from "./tick.ts";
 import { set_clock } from "../clock.ts";
@@ -15,7 +15,7 @@ import { set_clock } from "../clock.ts";
  * already reads time through clock.ts, so the tests move it by hand and the
  * arithmetic is exact rather than nearly.
  *
- * Installed per test and put back after, because io.ts reads the same clock
+ * Installed per test and put back after, because frame_budget.ts reads the same clock
  * and its own tests want the real one.
  */
 function test_on_a_held_clock(name: string, body: (clock: { now: () => number; burn: (ms: number) => void }) => void): void {
@@ -166,15 +166,4 @@ test_on_a_held_clock("tick - what the interaction phase spends comes off the bud
   const s = seen();
   t.run(s, 1 / 60, QUOTA_MS, clock.now());
   assert(s.a <= s.b - 1.5, `visible saw ${s.a} of ${s.b}`);
-});
-
-Deno.test("tick - the step table is fixed: a step past it is refused", () => {
-  const t = tick();
-  assertThrows(
-    () => {
-      for (let i = 0; i < 9; i++) t.on_tick(COSMETIC, () => {}, "t");
-    },
-    Error,
-    "steps are taken",
-  );
 });

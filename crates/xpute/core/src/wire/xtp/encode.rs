@@ -51,7 +51,7 @@ impl TreeEncoder {
 
         let new_cap = (cap * 2).max(new_cap);
         if new_cap > self.max_cap {
-            return Err(MarshalError::new(Errno::EOVERFLOW, Some(&format!("required packet size exceeds max cap ({})", self.max_cap)), None));
+            return Err(MarshalError::new(Errno::EOVERFLOW));
         }
 
         self.buf.resize(new_cap as usize, 0);
@@ -66,7 +66,7 @@ impl TreeEncoder {
         let _init_cap = opts.init_cap.unwrap_or(1 << 10);
         let max_cap = opts.max_cap.unwrap_or(MAX_PKT_SZ);
         if !(HDR_SZ..=MAX_PKT_SZ).contains(&max_cap) {
-            return Err(MarshalError::new(Errno::EINVAL, Some(&format!("bad max cap {max_cap} (expected {HDR_SZ}..{MAX_PKT_SZ})")), None));
+            return Err(MarshalError::new(Errno::EINVAL));
         }
         self.max_cap = max_cap;
 
@@ -118,7 +118,7 @@ impl TreeEncoder {
         if NODE_IS_NIL(node) {
             return Ok(());
         }
-        Err(MarshalError::new(Errno::EBADMSG, Some(&format!("unknown type 0x{:x} at {}", node.type_(), st.base)), None))
+        Err(MarshalError::new(Errno::EBADMSG))
     }
 
     // graft semantics:
@@ -134,7 +134,7 @@ impl TreeEncoder {
         let pkt = &node.val;
 
         if (pkt.len() as u32) < HDR_SZ {
-            return Err(MarshalError::new(Errno::EBADMSG, Some("bad graft packet: truncated header"), None));
+            return Err(MarshalError::new(Errno::EBADMSG));
         }
         let hdr_view = &pkt[..HDR_SZ as usize];
 
@@ -142,12 +142,12 @@ impl TreeEncoder {
         let mut reg = WORD_REG;
         let [magic, _] = GET_WORD(hdr_view, 0, &mut reg); // word0
         if magic != MAGIC {
-            return Err(MarshalError::new(Errno::EBADMSG, Some("bad graft packet: magic mismatch"), None));
+            return Err(MarshalError::new(Errno::EBADMSG));
         }
 
         let [payload_sz, desc] = GET_WORD(hdr_view, WORD_SZ, &mut reg); // word1
         if payload_sz > pkt.len() as u32 - HDR_SZ {
-            return Err(MarshalError::new(Errno::EBADMSG, Some("bad graft packet: truncated payload"), None));
+            return Err(MarshalError::new(Errno::EBADMSG));
         }
         st.type_ = field_get32(desc, DESC_TYPE_SHAMT, DESC_TYPE_MASK) as NodeType; // hi
 
@@ -157,13 +157,13 @@ impl TreeEncoder {
 
         let align_sz: AlignUnit = ALIGN_SZ(st.type_)?;
         if !payload_sz.is_multiple_of(align_sz) {
-            return Err(MarshalError::new(Errno::EBADMSG, Some(&format!("bad graft payload size: {payload_sz}")), None));
+            return Err(MarshalError::new(Errno::EBADMSG));
         }
 
         st.base = ALIGN(st.base, align_sz)?;
 
         if payload_sz as i64 > self.max_cap as i64 - st.base as i64 {
-            return Err(MarshalError::new(Errno::EOVERFLOW, Some(&format!("required packet size exceeds max cap ({})", self.max_cap)), None));
+            return Err(MarshalError::new(Errno::EOVERFLOW));
         }
         st.lim = st.base + payload_sz;
         self._ensure(st.lim)?;
@@ -195,7 +195,7 @@ impl TreeEncoder {
         let len = children.len() as u32;
         // empty branch (len = 0) is valid — analogous to [] or {} in JSON
         if len > (self.max_cap >> 3) {
-            return Err(MarshalError::new(Errno::EOVERFLOW, Some(&format!("required packet size exceeds max cap ({})", self.max_cap)), None));
+            return Err(MarshalError::new(Errno::EOVERFLOW));
         }
 
         st.lim = table_start + len * WORD_SZ;
@@ -236,7 +236,7 @@ impl TreeEncoder {
         let type_ = node.type_;
         let Some(val) = node.val else { return Ok(()) };
 
-        let mismatch = || MarshalError::new(Errno::EINVAL, Some(&format!("scalar 0x{:x} given a {:?} at {}", type_ as u8, val, st.base)), None);
+        let mismatch = || MarshalError::new(Errno::EINVAL);
 
         let w = |n: Numeric| -> Result<Vec<u8>, MarshalError> {
             Ok(match (type_, n) {
@@ -293,12 +293,12 @@ impl TreeEncoder {
             | SequenceType::I64_ARRAY
             | SequenceType::F32_ARRAY
             | SequenceType::F64_ARRAY => {
-                let SequenceVal::Array(arr) = val else { return Err(bad_type(type_ as u8, st.base)) };
+                let SequenceVal::Array(arr) = val else { return Err(bad_type()) };
                 payload_sz = arr.bytes.len() as u32;
                 len = payload_sz / ELEM_SZ(type_) as u32;
 
                 if payload_sz as i64 > self.max_cap as i64 - payload_start as i64 {
-                    return Err(MarshalError::new(Errno::EOVERFLOW, Some(&format!("required packet size exceeds max cap ({})", self.max_cap)), None));
+                    return Err(MarshalError::new(Errno::EOVERFLOW));
                 }
                 st.lim = payload_start + ALIGN(payload_sz, WORD_SZ)?;
                 self._ensure(st.lim)?;
@@ -307,16 +307,16 @@ impl TreeEncoder {
             }
 
             SequenceType::BITSET => {
-                let SequenceVal::Array(arr) = val else { return Err(bad_type(type_ as u8, st.base)) };
+                let SequenceVal::Array(arr) = val else { return Err(bad_type()) };
                 if arr.type_ != SequenceType::BITSET {
-                    return Err(bad_type(type_ as u8, st.base));
+                    return Err(bad_type());
                 }
                 let arr = &arr.bytes;
                 len = arr.len() as u32;
                 payload_sz = ((len as u64 + 7) >> 3) as u32;
 
                 if payload_sz as i64 > self.max_cap as i64 - payload_start as i64 {
-                    return Err(MarshalError::new(Errno::EOVERFLOW, Some(&format!("required packet size exceeds max cap ({})", self.max_cap)), None));
+                    return Err(MarshalError::new(Errno::EOVERFLOW));
                 }
                 st.lim = payload_start + ALIGN(payload_sz, WORD_SZ)?;
                 self._ensure(st.lim)?;
@@ -337,14 +337,14 @@ impl TreeEncoder {
             // is counted in units on both ends even though the bytes are
             // known here up front.
             SequenceType::STR => {
-                let SequenceVal::Str(s) = val else { return Err(bad_type(type_ as u8, st.base)) };
+                let SequenceVal::Str(s) = val else { return Err(bad_type()) };
                 let units = s.encode_utf16().count() as u32;
                 let min_needed = units;
 
                 // A payload that already starts past the cap has negative room;
                 // wrapping it to a large u32 is what makes the test fail then.
                 if units > (self.max_cap.wrapping_sub(payload_start) >> 2) {
-                    return Err(MarshalError::new(Errno::EOVERFLOW, Some(&format!("required packet size exceeds max cap ({})", self.max_cap)), None));
+                    return Err(MarshalError::new(Errno::EOVERFLOW));
                 }
                 let max_needed = units * 4;
 
@@ -379,8 +379,8 @@ impl TreeEncoder {
     }
 }
 
-fn bad_type(type_: u8, base: u32) -> MarshalError {
-    MarshalError::new(Errno::EBADMSG, Some(&format!("unknown type 0x{type_:x} at {base}")), None)
+fn bad_type() -> MarshalError {
+    MarshalError::new(Errno::EBADMSG)
 }
 
 /// A fresh encoder: one is made where one is used, and holds its buffer
@@ -398,14 +398,18 @@ const fn align(n: u32, unit: u32) -> u32 {
     (n + unit - 1) & !(unit - 1)
 }
 
-/// A packet of one root branch of leaves, written straight into bytes the
-/// caller holds — a ring slot's payload — in the layout `TreeEncoder` gives the same
+/// A packet of one root branch, written straight into bytes the caller holds
+/// — a ring slot's payload — in the layout `TreeEncoder` gives the same
 /// children, byte for byte, with no tree built first and nothing allocated.
-/// The children are declared up front, since the branch's table precedes
-/// them. A child that does not fit spoils the packet and `finish` refuses it;
-/// declaring one count and writing another is the caller's bug, and panics.
+/// A child may itself be a branch (`branch`). A branch's children are
+/// declared up front, since its table precedes them. A child that does not
+/// fit spoils the packet and `finish` refuses it; declaring one count and
+/// writing another is the caller's bug, and panics.
 pub struct PacketWriter<'a> {
     buf: &'a mut [u8],
+    /// The branch being written: where it starts, from the packet's start,
+    /// how many children it declared and how many it has been given.
+    base: u32,
     count: u32,
     written: u32,
     /// The end of what is written, from the packet's start.
@@ -417,7 +421,14 @@ impl<'a> PacketWriter<'a> {
     pub fn new(buf: &'a mut [u8], count: u32) -> PacketWriter<'a> {
         let lim = ROOT + WORD_SZ + count * WORD_SZ;
         let fits = lim as usize <= buf.len();
-        let mut w = PacketWriter { buf, count, written: 0, lim, fits };
+        let mut w = PacketWriter {
+            buf,
+            base: ROOT,
+            count,
+            written: 0,
+            lim,
+            fits,
+        };
         if fits {
             w.buf[..lim as usize].fill(0);
             w.word(0, MAGIC, RESERVED);
@@ -454,10 +465,10 @@ impl<'a> PacketWriter<'a> {
 
     /// The child's table entry: its offset from the branch, 0 for an empty one.
     fn entry(&mut self, base: Option<usize>, type_: u8) -> &mut Self {
-        assert!(self.written < self.count, "a packet writer given more than the {} children it declared", self.count);
+        crate::ensure!(self.written < self.count, ENOSPC, self.count);
         if self.fits {
-            let rel_off = base.map_or(0, |b| b as u32 - ROOT);
-            self.word(ROOT + WORD_SZ + self.written * WORD_SZ, rel_off, type_ as u32);
+            let rel_off = base.map_or(0, |b| b as u32 - self.base);
+            self.word(self.base + WORD_SZ + self.written * WORD_SZ, rel_off, type_ as u32);
         }
         self.written += 1;
         self
@@ -609,10 +620,32 @@ impl<'a> PacketWriter<'a> {
         self.array_with(SequenceType::U64_ARRAY, len, |i| value(i).to_le_bytes())
     }
 
+    /// A branch of `count` children, which `fill` writes as it would the
+    /// packet's own.
+    pub fn branch(&mut self, count: u32, fill: impl FnOnce(&mut Self)) -> &mut Self {
+        let at = self.reserve(WORD_SZ, WORD_SZ + count * WORD_SZ);
+        if let Some(at) = at {
+            self.word(at as u32, count, RESERVED);
+        }
+        // A branch that did not fit has spoiled the packet: its children are
+        // still counted, against a base nothing is written at.
+        let outer = (self.base, self.count, self.written);
+        (self.base, self.count, self.written) = (at.map_or(ROOT, |at| at as u32), count, 0);
+        fill(self);
+        crate::ensure!(self.written == self.count, ENOTRECOVERABLE, self.count, self.written);
+        (self.base, self.count, self.written) = outer;
+        self.entry(at, SpecialType::BRANCH as u8)
+    }
+
+    /// A branch that is not there, its kind kept.
+    pub fn no_branch(&mut self) -> &mut Self {
+        self.entry(None, SpecialType::BRANCH as u8)
+    }
+
     /// The packet's length, header included and to the word; none when a
     /// child did not fit.
     pub fn finish(mut self) -> Option<u32> {
-        assert_eq!(self.written, self.count, "a packet writer declared {} children and was given {}", self.count, self.written);
+        crate::ensure!(self.written == self.count, ENOTRECOVERABLE, self.count, self.written);
         if !self.fits {
             return None;
         }

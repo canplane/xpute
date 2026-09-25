@@ -16,13 +16,13 @@ Three things cross between them and nothing else does: one memory they share, on
 
 The two sides share one linear memory and nothing else. The host reserves it at boot and never grows it, so a view taken into that memory stays valid for as long as the guest lives. Everything below rests on that: a message queue can keep its words at a fixed address, and a payload can be read where it lies rather than copied out of the way first.
 
-What goes in the memory is the guest's business; placing it is the runtime's. The guest hands in a base, a unit and a list of sizes, and gets back where each range landed (`mem/section.rs`). A linker script does the same thing with output sections, for the same reason: whatever places ranges should not need to know what any of them hold.
+What goes in the memory is the guest's business; placing it is the runtime's. The guest hands in a base, a unit and a list of sizes, and gets back where each range landed (`mem/section.rs`). A linker script does the same thing with output sections, for the same reason: whatever places ranges should not need to know what any of them hold. A range comes back as a section, and whatever is asked of it — a span to write, or ranges laid inside it — is checked against where it ends (`Section::at`, `nth`), so nothing written through one range lands in the next.
 
 The last range is the heap, and blocks come out of it through a single call (`mem/heap.rs`). What answers that call is the guest's choice. `core` offers two allocators that fit together. The lower one is a buddy allocator, which hands out fixed pages over a given span (`alloc/buddy_tree.rs`, ported from evanw/buddy-malloc). Above it sits a slab allocator holding size classes (`alloc/slab.rs`), so that a small request takes a slot of its own class instead of a whole page. The slab keeps its bookkeeping inside the blocks it has not handed out, so what it costs does not grow with the span it covers.
 
 The buddy is not ours: it was written for this same situation, a module handed one heap with no system allocator beneath it.
 
-One kind of buffer cannot live in that memory at all. Work sent off the thread needs something transferable, and a `WebAssembly.Memory` is not. The host keeps a small pool of fixed-size transferable buffers for that case (`mem/transfer.ts`), made on first need and reused when they come back. The pool is capped, and the cap is the backpressure: when every buffer is out, whatever wanted one waits.
+One kind of buffer cannot live in that memory at all. Work sent off the thread needs something transferable, and a `WebAssembly.Memory` is not. The host keeps a small pool of fixed-size transferable buffers for that case (`mem/transfer.ts`), made on first need, reused when they come back, and let go once idle. The pool is capped, and the cap is the backpressure: when every buffer is out, whatever wanted one waits.
 
 ---
 
@@ -57,6 +57,18 @@ Positions only ever grow, so `tail - head` is how many messages are waiting. Mes
 A push can fail in two ways and no others. `EAGAIN` means the ring is full: the producer waits, and nothing is dropped. `EMSGSIZE` means the packet is bigger than a slot, and a packet that big crosses by address instead, in a heap block the guest hands out and the host writes into.
 
 Two rings make a pair: one for what the host submits, one for what the guest completes. Driving that pair from the host end is the **doorbell** (`ipc/doorbell.ts`). It pushes the commands, rings the guest with a quota, and then reads the completion ring dry, handing each message either to the call that was waiting for it or to whoever listens for signals. One ring of the bell is one whole turn of the guest.
+
+## Streams, for what the host must do before the next turn
+
+A message on the completion ring waits until the host reads it, and the guest cannot tell when that is. Some requests cannot wait like that: a call the host has to make before anything else reaches a device, or one whose result the guest will read on its next turn. For those the guest writes a **stream** (`ipc/stream.rs`): records laid end to end in a range of the memory during a turn, which the host runs, all of them, when the turn returns and before it rings again.
+
+```text
+0       END   how many words of records the turn wrote
+1…            the rest of the head, the user's
+head…   op · n · n words   op · n · n words   …
+```
+
+A record is an op the user numbers, a count, and that many words. Because the whole stream runs between two turns, a record can name memory for the host to write into, and the guest reads it on its next turn without being told it is there: the order is the acknowledgment. What a stream costs is its range, which bounds what one turn can ask for; what a full stream means is the user's to decide.
 
 ---
 
@@ -183,10 +195,10 @@ Everything above is implemented in both Rust and TypeScript, and the two impleme
 
 `core` is symmetric. Each language implements the same kit, and the golden records hold the two to each other wherever they must produce identical bytes. `runtime` is not symmetric and is not meant to be: its two halves are the two ends of one arrangement. The host end is TypeScript and the guest end is Rust. A module with nothing facing it across the boundary is not a gap waiting to be filled. What the two ends must agree on is not their module lists but their formats: the message's four words, the ring's layout, the memory's sections.
 
-|             | Rust (`crates/xpute/`)                                                                                                                                                                                                    | TypeScript (`packages/xpute/`)                                                                                                                                                  |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **core**    | `abi` words and the command number · `alloc` slab and buddy · `codec` JSON · `collection` arena, deque, heap · `math` scalar, vec3, mat4, rng · `status` errno, error, log · `wire` XTP, TLV · `golden` the record reader | `abi` `codec` `collection` `math` `status` `wire` as the Rust, plus `kit` (comparators, iterators, types) and `env` (feature detection)                                         |
-| **runtime** | `mem` sections and the heap door · `ipc` frame, ring, change log · `sched` quantum, tick, pass, task, edge · `io` the credit queue · `abi` handles, fetch · `clock` · `global`                                            | `mem` the reservation and the transferable buffers · `ipc` frame, ring, change log, **doorbell** · `sched` quantum, tick, pass, io, **strobe** · `abi` handles, fetch · `clock` |
+|             | Rust (`crates/xpute/`)                                                                                                                                                                                        | TypeScript (`packages/xpute/`)                                                                                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **core**    | `abi` words and the command number · `alloc` slab and buddy · `codec` JSON · `collection` arena, deque, heap · `math` scalar, rng · `status` errno, error, bug · `wire` XTP, TLV · `golden` the record reader | `abi` `codec` `collection` `math` `status` `wire` as the Rust, plus `kit` (comparators, iterators, types) and `env` (feature detection)                                             |
+| **runtime** | `mem` sections and the heap door · `ipc` frame, ring, stream, change log · `sched` quantum, tick, pass, task, edge · `abi` handles, fetch · `clock` · `global`                                                | `mem` the reservation and the transferable buffers · `ipc` frame, ring, stream, change log, **doorbell** · `sched` quantum, tick, pass, **strobe** · `abi` handles, fetch · `clock` |
 
 The two rows differ in what they ask of a program. `core` asks nothing: link it and call it. `runtime` asks a program to run xpute's way — memory granted once, work in turns, I/O by credits.
 

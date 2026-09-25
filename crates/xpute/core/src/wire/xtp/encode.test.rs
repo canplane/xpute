@@ -8,7 +8,7 @@ use crate::wire::xtp::spec::{Array, NodeValue, SequenceType};
 use crate::wire::xtp::view::{NodeView, TreeView, ViewValue};
 
 /// What the TypeScript computed, recorded: the generator that wrote it
-/// is gone and the vector stands as it is (xpute-core/sys/vector.rs).
+/// is gone and the vector stands as it is (xpute-core/golden.rs).
 const GOLDEN: &str = include_str!("../../../golden/wire/xtp/encode.tsv");
 
 /// A typed array as a value, written at the width its type names.
@@ -118,6 +118,46 @@ fn a_packet_writer_writes_the_bytes_the_encoder_writes_for_the_same_branch() {
     let mut w = PacketWriter::new(&mut small, 1);
     w.str(Some("longer than what is left"));
     assert_eq!(w.finish(), None, "a child that does not fit spoils the packet");
+}
+
+#[test]
+fn a_branch_inside_a_packet_writer_is_the_encoder_s_branch() {
+    let floats = [0.5f64, 4.0];
+    let expected = encode(|t| {
+        t.branch(Some(&mut |b| {
+            b.u32(Some(1))
+                .branch(Some(&mut |b| {
+                    b.str(Some("a")).branch(Some(&mut |b| {
+                        b.f64(Some(2.0)).str(None);
+                    }));
+                }))
+                .branch(None)
+                .branch(Some(&mut |_| {}))
+                .f64_array(Some(&floats[..]));
+        }));
+    });
+    let mut buf = [0xffu8; 512];
+    let mut w = PacketWriter::new(&mut buf, 5);
+    w.u32(Some(1))
+        .branch(2, |w| {
+            w.str(Some("a")).branch(2, |w| {
+                w.f64(Some(2.0)).str(None);
+            });
+        })
+        .no_branch()
+        .branch(0, |_| {})
+        .f64_array(Some(&floats));
+    let n = w.finish().unwrap() as usize;
+    assert_eq!(&buf[..n], &expected[..]);
+    let root = TreeReader::new(&buf[..n]).unwrap().read_branch().unwrap();
+    let inner = root.at_branch(1).unwrap().at_branch(1).unwrap();
+    assert_eq!(inner.at(0).unwrap().get_number().unwrap(), 2.0);
+    let mut small = [0u8; 48];
+    let mut w = PacketWriter::new(&mut small, 1);
+    w.branch(3, |w| {
+        w.u32(Some(1)).u32(Some(2)).str(Some("past the room"));
+    });
+    assert_eq!(w.finish(), None, "a branch that does not fit spoils the packet");
 }
 
 #[test]

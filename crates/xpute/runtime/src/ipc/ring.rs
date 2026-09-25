@@ -15,7 +15,7 @@
 //! A slot is a descriptor of four words and a payload of `slot_bytes`, and the
 //! two lie apart because one is sixteen bytes and the other is thousands: the
 //! descriptors are a header of eight u32 words and `capacity` of them, and the
-//! payloads are `capacity` runs of `slot_bytes` **elsewhere in the memory**. Which is how every ring this is modelled on
+//! payloads are `capacity` runs of `slot_bytes` **elsewhere in the memory**. Which is how every ring this is modeled on
 //! is built: virtio's descriptor table, avail and used are three separate
 //! areas, and AF_XDP's rings are one mapping and its UMEM another. The
 //! descriptors are kilobytes and the payloads are megabytes, so tying the two
@@ -66,7 +66,7 @@ use super::frame::{cmd_of, cmd_word, flags_of, FRAME_CMD, FRAME_PACKET, FRAME_RE
 /// The arithmetic is on the address and not on the pointer, which matters: a
 /// ring's memory is a machine's — a wasm module's linear memory, addressed
 /// from 0 — so its base is a number and not a pointer into an allocation, and
-/// `ptr::add` on one of those is undefined. A release build took the licence:
+/// `ptr::add` on one of those is undefined. A release build took the license:
 /// it dropped a ring's capacity word and left the rest of the header standing,
 /// so the ring read back as one of capacity 0.
 fn at_of<T>(mem: *mut u8, off: usize) -> *mut T {
@@ -118,7 +118,7 @@ impl Ring {
         let head = unsafe { core::slice::from_raw_parts(at_of::<u32>(mem, at as usize), RING_HEADER_WORDS as usize) };
         let capacity = head[0];
         if capacity == 0 || (capacity & (capacity - 1)) != 0 {
-            panic!("ring: capacity {capacity} at {at} is not a power of two");
+            xpute_core::bug!(EINVAL, capacity, at);
         }
         Ring {
             mem,
@@ -153,10 +153,10 @@ impl Ring {
     /// As `new`.
     pub unsafe fn init(mem: *mut u8, at: u32, capacity: u32, slot_base: u32, slot_bytes: u32) -> Ring {
         if capacity == 0 || (capacity & (capacity - 1)) != 0 {
-            panic!("ring: capacity {capacity} is not a power of two");
+            xpute_core::bug!(EINVAL, capacity);
         }
         if slot_bytes == 0 || (slot_bytes & (slot_bytes - 1)) != 0 || !slot_bytes.is_multiple_of(8) {
-            panic!("ring: a slot of {slot_bytes} bytes is not a power of two of whole words");
+            xpute_core::bug!(EINVAL, slot_bytes);
         }
         // SAFETY: the caller's memory, as `new` requires.
         unsafe {
@@ -294,7 +294,7 @@ impl Ring {
         if packet_at == 0 {
             return Ok(None);
         }
-        let bad = || MarshalError::new(Errno::EBADMSG, Some(&format!("ring: message packet at {packet_at} lies outside a slot")), None);
+        let bad = || MarshalError::new(Errno::EBADMSG);
         let off = packet_at.checked_sub(self.slot_base).ok_or_else(bad)? as usize;
         if !off.is_multiple_of(self.slot_bytes as usize) || off + 16 > self.slots().len() {
             return Err(bad());
@@ -310,7 +310,7 @@ impl Ring {
     /// Consumes the message at the head.
     pub fn advance(&self) {
         if self.is_empty() {
-            panic!("ring: advance on an empty ring");
+            xpute_core::bug!(ENOTRECOVERABLE);
         }
         self.words()[1] = self.words()[1].wrapping_add(1);
     }

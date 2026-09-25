@@ -47,7 +47,7 @@ function val_to_node(val: NodeValue<NodeView>): Node {
     return F64_NODE(val);
   }
   if (typeof val === "bigint") {
-    if (!fits_i64(val)) throw new MarshalError(Errno.EINVAL, "bigint does not fit i64");
+    if (!fits_i64(val)) throw new MarshalError(Errno.EINVAL);
     return I64_NODE(val);
   }
   if (typeof val === "boolean") return BOOL_NODE(val);
@@ -70,7 +70,7 @@ function val_to_node(val: NodeValue<NodeView>): Node {
     return (branch.node);
   }
 
-  throw new MarshalError(Errno.EINVAL, `unsupported value: ${val}`);
+  throw new MarshalError(Errno.EINVAL);
 }
 
 // ============ View ============
@@ -165,7 +165,7 @@ export class TreeView extends NodeView {
    *   requirement of the tree packet format itself.
    *
    * Contract:
-   * - Unsupported input is treated as programmer error and throws.
+   * - Unsupported input is treated as programr error and throws.
    * - bigint is accepted only when it fits the i64 lowering path.
    * - Generic scalar bigint lowering currently targets only i64.
    *   Unsigned 64-bit scalar writes must use the explicit u64() writer.
@@ -287,7 +287,7 @@ export class TreeView extends NodeView {
    * Full packet validation is intentionally out of scope here.
    */
   override graft(pkt: U8Array): this {
-    if (pkt.byteOffset % WORD_SZ) throw new MarshalError(Errno.EBADMSG, `bad graft packet: misaligned base offset ${pkt.byteOffset}`);
+    if (pkt.byteOffset % WORD_SZ) throw new MarshalError(Errno.EBADMSG);
     return this._set_node({ type: SpecialType.GRAFT, val: pkt });
   }
 }
@@ -425,7 +425,7 @@ export abstract class BranchView extends NodeView {
    * - Full packet validation is intentionally deferred
    */
   override graft(pkt: U8Array): this {
-    if (pkt.byteOffset % WORD_SZ) throw new MarshalError(Errno.EBADMSG, `bad graft packet: misaligned base offset ${pkt.byteOffset}`);
+    if (pkt.byteOffset % WORD_SZ) throw new MarshalError(Errno.EBADMSG);
     return this._put_node({ type: SpecialType.GRAFT, val: pkt });
   }
 }
