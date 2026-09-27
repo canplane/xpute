@@ -19,7 +19,7 @@ members = [
 # test, whichever libm the platform has.
 libm = "0.2"
 # FNV-1a, 64 bits: what a POI page keys a record by (id_hash) and the
-# kernel keys a demand by. Over UTF-8 bytes, the same as script/spec.ts's.
+# kernel keys a demand by. Over UTF-8 bytes, the same as pxl-tool/spec/data.rs's.
 fnv = "1"
 # A set whose position is the value: insert appends, swap_remove moves the
 # last entry into the hole, and a caller keeps its own lanes at the same

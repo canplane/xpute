@@ -4,7 +4,7 @@ xpute runs one program inside another. The **host** owns the machine — the clo
 
 **xpute is both ends of that arrangement, and `core`, the generic code underneath them.** All of it is written twice, once in Rust and once in TypeScript.
 
-It was written for a Rust program compiled to one WebAssembly module and driven by TypeScript in a browser tab. Nothing in xpute knows what that program computes.
+It was written for a Rust program driven by TypeScript: compiled to one WebAssembly module in a browser tab, or linked into a native app. Nothing in xpute knows what that program computes.
 
 ## The arrangement
 
@@ -72,7 +72,7 @@ This is a copy. xpute is developed inside pixelet, a closed application that is 
 
 [plei.me](https://plei.me) is that application running, which is the only public view of this kit at work.
 
-Taken from **pixelet@ff23d356**.
+Taken from **pixelet@6dc686aa**.
 
 The four files generated from `spec/xpute/` — the errno table and the fetch ABI, on both sides — are checked in as pixelet generates them. The generator itself knows every one of pixelet's specs and did not come along, so this copy reads but does not regenerate them.
 

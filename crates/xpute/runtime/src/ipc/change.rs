@@ -35,6 +35,8 @@ use std::collections::HashMap;
 
 use fnv::FnvBuildHasher;
 
+use crate::mem::base::off_of;
+
 pub type Topic = u32;
 pub type Revision = u32;
 /// A position in the journal: how many changes had been written before it.
@@ -47,18 +49,6 @@ pub struct ChangeLogOptions {
     pub capacity: u32,
     /// Keys a topic's table holds before it grows.
     pub keys_per_topic: Option<u32>,
-}
-
-/// What a reader walks: the journal's lanes and positions. ChangeLog is one;
-/// a log kept in a WASM core and read through views is another.
-pub trait ChangeJournal {
-    fn topics(&self) -> u32;
-    fn head(&self) -> Cursor;
-    fn readable(&self, cursor: Cursor) -> bool;
-    fn slot(&self, position: Cursor) -> u32;
-    fn topic(&self) -> &[u16];
-    fn key(&self) -> &[i64];
-    fn revision(&self) -> &[u32];
 }
 
 pub struct ChangeLog {
@@ -162,40 +152,16 @@ impl ChangeLog {
         position % self.capacity
     }
 
-    /// The lanes' addresses, for a reader through views (the glue's): topic,
-    /// key, revision, the head word and the ticks.
+    /// The lanes' addresses in the memory (mem/base.rs), for a reader through
+    /// views (the glue's): topic, key, revision, the head word and the ticks.
     pub fn lanes(&self) -> [usize; 5] {
         [
-            self.topic.as_ptr() as usize,
-            self.key.as_ptr() as usize,
-            self.revision.as_ptr() as usize,
-            &self._head as *const u32 as usize,
-            self.ticks.as_ptr() as usize,
+            off_of(self.topic.as_ptr()),
+            off_of(self.key.as_ptr()),
+            off_of(self.revision.as_ptr()),
+            off_of(&raw const self._head),
+            off_of(self.ticks.as_ptr()),
         ]
-    }
-}
-
-impl ChangeJournal for ChangeLog {
-    fn topics(&self) -> u32 {
-        ChangeLog::topics(self)
-    }
-    fn head(&self) -> Cursor {
-        ChangeLog::head(self)
-    }
-    fn readable(&self, cursor: Cursor) -> bool {
-        ChangeLog::readable(self, cursor)
-    }
-    fn slot(&self, position: Cursor) -> u32 {
-        ChangeLog::slot(self, position)
-    }
-    fn topic(&self) -> &[u16] {
-        &self.topic
-    }
-    fn key(&self) -> &[i64] {
-        &self.key
-    }
-    fn revision(&self) -> &[u32] {
-        &self.revision
     }
 }
 
