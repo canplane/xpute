@@ -34,8 +34,9 @@ jspm_packages/
 # Backup files sometimes created by rustfmt/editor tooling
 **/*.rs.bk
 
-# Rust workspace build output
+# Build output: the Rust workspace's, and the C++'s (script/cpp.ts)
 /crates/target
+/target
 
 # Written by whoever runs the gate here, and not by the export. Two libraries'
 # locks bind no consumer, and pixelet's own are what its builds are held to.

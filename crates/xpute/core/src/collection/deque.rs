@@ -1,13 +1,8 @@
 // xpute-core/collection/deque.rs
 
-//! A ring over a buffer the caller owns: `buf` is the capacity, `head` is
-//! where the front sits, and `len` counts live elements forward from there.
-//! The three are public because they are the caller's — this allocates
-//! nothing, grows never, and holds no state of its own.
-//!
-//! A slot is `Option<T>` because that is how a value leaves a borrowed slice
-//! without unsafe. It carries no meaning: `head` and `len` alone say which
-//! slots are live.
+//! A ring over a buffer the caller owns; it never grows. A slot is an
+//! `Option` only so a value can leave without unsafe: `head` and `len` alone
+//! say which slots are live.
 
 pub struct Deque<'a, T> {
     pub buf: &'a mut [Option<T>],
@@ -50,12 +45,14 @@ impl<T> Deque<'_, T> {
     }
 
     pub fn push_back(&mut self, v: T) {
+        crate::ensure!(self.len < self.cap(), ENOSPC, self.len);
         let i = (self.head + self.len) % self.cap();
         self.buf[i as usize] = Some(v);
         self.len += 1;
     }
 
     pub fn push_front(&mut self, v: T) {
+        crate::ensure!(self.len < self.cap(), ENOSPC, self.len);
         let cap = self.cap();
         self.head = (self.head + cap - 1) % cap;
         self.buf[self.head as usize] = Some(v);

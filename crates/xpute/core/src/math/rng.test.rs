@@ -1,10 +1,9 @@
 // xpute-core/math/rng.test.rs
-// (no pair: rng.ts has no test file)
 
 use super::*;
 use crate::golden::Golden;
 
-const GOLDEN: &str = include_str!("../../golden/math/rng.tsv");
+const GOLDEN: &str = include_str!("../../../../../spec/xpute/golden/math/rng.tsv");
 
 #[test]
 fn rng_computes_what_the_record_holds() {

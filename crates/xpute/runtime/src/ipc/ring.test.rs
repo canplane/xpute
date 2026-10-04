@@ -1,11 +1,9 @@
 // xpute-runtime/ipc/ring.test.rs
 
 use super::*;
-use crate::ipc::frame::FrameFlag;
+use crate::ipc::frame;
 use xpute_core::wire::xtp::{encoder, NodeView, TreeEncoderOptions, TreeReader, TreeView};
 
-/// A ring of `capacity` slots of `slot` bytes, its descriptors at 8 and its
-/// payloads past them, in a buffer of its own.
 fn ring(capacity: u32, slot: u32) -> (Ring, Box<[u8]>) {
     let slot_base = 8 + ring_bytes(capacity);
     let mut buf = vec![0u8; (slot_base + slots_bytes(capacity, slot)) as usize].into_boxed_slice();
@@ -18,7 +16,7 @@ fn ring(capacity: u32, slot: u32) -> (Ring, Box<[u8]>) {
 #[test]
 fn ring_messages_come_out_in_order_across_the_wrap_and_a_full_ring_refuses() {
     let (r, _buf) = ring(4, 64);
-    let ack = FrameFlag::ACKREQ as u32;
+    let ack = frame::ACKREQ;
     for round in 0..3u32 {
         for k in 0..4 {
             assert_eq!(r.push(round * 4 + k, 7, ack, None, -((round * 4 + k) as i32)), Errno::OK);
@@ -57,9 +55,7 @@ fn ring_a_packet_written_in_place_reads_as_the_one_pushed_and_one_past_a_slot_is
     let at = r.peek() as u32;
     assert_eq!(r.packet(at).unwrap().unwrap(), pushed.as_slice());
 
-    // The same packet is refused the same way with a message in the ring and
-    // with none: a slot is a slot, so what fits does not depend on what was
-    // sent before it.
+    // Refused the same with a message in the ring and with none.
     let long = "x".repeat(200);
     let too_long = |out: &mut [u8]| {
         let mut w = PacketWriter::new(out, 1);
@@ -111,6 +107,6 @@ fn ring_one_payload_a_slot_so_the_payloads_run_out_with_the_slots_and_never_befo
     assert_eq!(r.push(10, 0x0101, 0, Some(&[0u8; 72]), 0), Errno::EMSGSIZE);
     let at = r.entry_at(r.tail());
     r.push(11, 0, 0, None, 0);
-    r.words()[(at + FRAME_PACKET) as usize] = 4;
+    r.words()[(at + frame::PACKET) as usize] = 4;
     assert!(r.packet(at).is_err(), "outside a slot");
 }

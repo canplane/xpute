@@ -1,10 +1,9 @@
 // xpute-core/math/scalar.test.rs
-// (no pair: scalar.ts has no test file)
 
 use super::*;
 use crate::golden::Golden;
 
-const GOLDEN: &str = include_str!("../../golden/math/scalar.tsv");
+const GOLDEN: &str = include_str!("../../../../../spec/xpute/golden/math/scalar.tsv");
 
 #[test]
 fn scalar_computes_what_the_record_holds() {

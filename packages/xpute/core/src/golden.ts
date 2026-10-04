@@ -1,27 +1,15 @@
 // @xpute/core/golden.ts
 
 /**
- * The reader of the golden records, as xpute-core/golden.rs is: lines of
- * `path<TAB>value`, the path the keys and indices down to the value joined by
- * dots. A split per line and no parser, so reading is not itself a thing to
- * verify.
- *
- * Which records this side may read is the rule in golden.rs: a record of a
- * value that never leaves the language it was computed in is that language's,
- * and this has no business asserting it. What this is for are the records that
- * cross — the wire's, where both sides have to produce the same bytes from the
- * same input and the record is the only thing that says so.
- *
- * The files live in the Rust crate that reads them with `include_str!`. There
- * is one copy, not one per language, because a second copy is how the two come
- * to disagree without anything failing.
+ * Reads the golden records under spec/xpute/ (lines of `path<TAB>value`), as
+ * xpute-core/golden.rs does. Only records that cross languages belong here.
  */
 
 import type { U8Array } from "./abi/array.ts";
 import type { f64, u32, u64 } from "./abi/word.ts";
 import { Errno } from "@xpute/core/status/errno.spec.ts";
 import { InvariantError } from "@xpute/core/status/error.ts";
-const CRATE = new URL("../../../../crates/xpute/core/golden/", import.meta.url);
+const SPEC = new URL("../../../../spec/xpute/", import.meta.url);
 
 export class Golden {
   private readonly map: Map<string, string>;
@@ -35,9 +23,9 @@ export class Golden {
     );
   }
 
-  /** The record at `path` under the crate's `golden/`. */
+  /** The record at `path` under spec/xpute/: `golden/wire/tlv.tsv`. */
   static async load(path: string): Promise<Golden> {
-    return new Golden(await Deno.readTextFile(new URL(path, CRATE)));
+    return new Golden(await Deno.readTextFile(new URL(path, SPEC)));
   }
 
   has(key: string): boolean {
@@ -73,7 +61,6 @@ export class Golden {
     throw new InvariantError(Errno.EINVAL);
   }
 
-  /** Bytes written as hex. */
   bytes(key: string): U8Array {
     const text = this.s(key);
     const out = new Uint8Array(text.length / 2);
@@ -100,7 +87,6 @@ export class Golden {
     if (k === 0) throw new InvariantError(Errno.ENOENT);
   }
 
-  /** How many entries `base` has. */
   len(base: string): u32 {
     let n = 0;
     this.each(base, () => n++);

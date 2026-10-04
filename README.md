@@ -1,15 +1,15 @@
 # xpute
 
-xpute runs one program inside another. The **host** owns the machine — the clock, the memory, the I/O — and the **guest** computes and owns nothing. Everything the guest has, the host granted it, a slice at a time: the memory once at boot, a quota of time on every turn, credits for the I/O it asks for. That is what an operating system has with a process, without the hardware that enforces it.
+xpute runs one program inside another, and gives it resources rather than abstractions. The **host** owns the platform — the clock, the memory, whatever reaches outside — and the **guest** owns none of it on its own account: it controls what it is granted. Everything the guest has, the host granted it, a slice at a time: the memory once at boot, and a quota of time on every turn. What the guest builds over them — its allocator, its scheduler, its tables — is its own, as a library operating system's is over an exokernel, without the hardware that enforces the grant.
 
-**xpute is both ends of that arrangement, and `core`, the generic code underneath them.** All of it is written twice, once in Rust and once in TypeScript.
+**xpute is both ends of that arrangement, and `core`, the generic code underneath them.** `core` is written in every language xpute has, and each end in the languages it is built in.
 
-It was written for a Rust program driven by TypeScript: compiled to one WebAssembly module in a browser tab, or linked into a native app. Nothing in xpute knows what that program computes.
+It was written for a program driven by TypeScript: compiled to one WebAssembly module in a browser tab, or linked into a native app. Nothing in xpute knows what that program computes.
 
 ## The arrangement
 
 ```text
-┌─ host ── TypeScript ───┐                        ┌─ guest ── Rust ──────────┐
+┌─ host ── TypeScript ───┐                        ┌─ guest ──────────────────┐
 │ owns the clock, the    │                        │ computes, and owns       │
 │ memory, the I/O        │ ═ interrupt(quota) ═▶  │ nothing                  │
 │                        │                        │                          │
@@ -27,22 +27,25 @@ Three edges, and one call the other way: the guest reads the host's clock (`now`
 
 `interrupt` is the whole of the guest's life. It runs when the host rings, for as long as the quota it was handed, and when the call returns it is not running at all — its answer is when it would like the next one. A guest that asks for nothing is rung for nothing.
 
-Two budgets run and they never touch: time for the guest's own work, and credits for the work the host does on its behalf.
+What the guest cannot do itself — a file, a call to a device — it asks for in what its turn leaves, and the host takes every such request before it rings again.
 
-[ARCHITECTURE.md](./ARCHITECTURE.md) is what each piece is and why it is shaped that way: the memory, the rings, the change log, the turn, the credits, the handles, the wire formats, the records.
+[ARCHITECTURE.md](./ARCHITECTURE.md) is what each piece is and why it is shaped that way: the memory, the rings, the turn, the handles, the contract either end must keep, the wire formats, the records.
 
 ## `core` and `runtime`
 
-`core` is a kit and nothing more — collections, codecs, math over one libm, an errno table, the wire formats. Link it and use it: it knows nothing of turns, hosts or memories.
+`core` is a kit and nothing more — collections, codecs, scalar math, an errno table, the wire formats. Link it and use it: it knows nothing of turns, hosts or memories.
 
-Golden records under `crates/xpute/core/golden/` hold the two languages to each other wherever bytes cross.
+Golden records under `spec/xpute/golden/` hold the languages to each other wherever bytes cross.
 
-`runtime` is the arrangement above, and it is not symmetric — the two halves are the two ends of one thing, not two implementations of it. A module on one side with nothing facing it is not a gap to fill; what the two owe each other is not matching module lists but matching formats.
+`runtime` is the arrangement above. Its host end and its guest end are the two ends of one thing, not two implementations of it: a module on one side with nothing facing it is not a gap to fill, and what the two owe each other is not matching module lists but matching formats. Its guest end exists in more than one language, and those are one end, so they match as `core` does.
 
 ```text
-crates/xpute/core     ·  packages/xpute/core       the same kit, twice
-crates/xpute/runtime  ·  packages/xpute/runtime    the guest end · the host end
-spec/xpute                                         numbers both are generated from
+crates/xpute/core  ·  packages/xpute/core  ·  cpp/xpute/core     the same kit, in each language
+crates/xpute/runtime  ·  packages/xpute/runtime                  the guest end · the host end
+cpp/xpute/runtime                                                the guest end once more, in C++
+crates/xpute/conformance  ·  cpp/xpute/conformance               a guest in each, and the contract's traces
+packages/xpute/conformance                                       the host that runs the traces against them
+spec/xpute                                                       numbers all of them are generated from
 ```
 
 ## What it leaves to whoever uses it
@@ -58,11 +61,12 @@ The line is drawn in the same place every time: xpute carries the mechanism, and
 
 ## Running it
 
-Deno 2.x and a Rust toolchain.
+Deno 2.x, a Rust toolchain with the `wasm32-unknown-unknown` target, a C++20 compiler as `c++` or `$CXX`, and the [WASI SDK](https://github.com/WebAssembly/wasi-sdk) at `/opt/wasi-sdk` or `$WASI_SDK_PATH`, for the C++ guest built as a WebAssembly module.
 
 ```sh
-deno task check   # deno fmt --check, deno check, cargo fmt --check, clippy
-deno task test    # deno test and cargo test, the golden records included
+deno task check   # deno fmt --check, deno check, cargo fmt --check, clippy, the C++ compiled
+deno task test    # deno test, cargo test and the C++ tests, the golden records included,
+                  # then the traces run against every guest, native and WebAssembly
 deno task lint    # deno lint
 ```
 
@@ -72,9 +76,9 @@ This is a copy. xpute is developed inside pixelet, a closed application that is 
 
 [plei.me](https://plei.me) is that application running, which is the only public view of this kit at work.
 
-Taken from **pixelet@6dc686aa**.
+Taken from **pixelet@14adf558d**.
 
-The four files generated from `spec/xpute/` — the errno table and the fetch ABI, on both sides — are checked in as pixelet generates them. The generator itself knows every one of pixelet's specs and did not come along, so this copy reads but does not regenerate them.
+The files generated from `spec/xpute/` are checked in as pixelet generates them. The generator itself knows every one of pixelet's specs and did not come along, so this copy reads but does not regenerate them.
 
 ## License
 

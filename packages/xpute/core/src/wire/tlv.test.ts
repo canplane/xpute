@@ -1,10 +1,6 @@
 // @xpute/core/wire/tlv.test.ts
 
-/**
- * The half of xpute-core/wire/tlv.test.rs that runs here. TLV's bytes cross,
- * so the record is a claim about both languages and each side has to be held
- * to it: the Rust alone would only prove the Rust has not drifted.
- */
+/** Holds the TypeScript side to golden/wire/tlv.tsv, which every language's TLV must match. */
 
 import { assertEquals } from "@std/assert";
 
@@ -14,14 +10,13 @@ import { FaultError } from "@xpute/core/status/error.ts";
 import { bytes_to_hex, hex_to_bytes } from "@xpute/core/codec/encoding.ts";
 import { TlvReader, type TlvValue, TlvWriter } from "@xpute/core/wire/tlv.ts";
 
-/** A read value as the record prints it: `typeof`, a colon, the value. */
 function show(v: TlvValue): string {
   if (v instanceof Uint8Array) return `bytes:${bytes_to_hex(v)}`;
   return `${typeof v}:${v}`;
 }
 
 Deno.test("tlv computes what the typescript computes", async () => {
-  const v = await Golden.load("wire/tlv.tsv");
+  const v = await Golden.load("golden/wire/tlv.tsv");
 
   const w = new TlvWriter(4);
   w.u8(200).i8(-3).u16(65535).i16(-2).u32(4000000000).i32(-7);
@@ -36,6 +31,21 @@ Deno.test("tlv computes what the typescript computes", async () => {
   const want: string[] = [];
   v.each("read", (k) => want.push(v.s(k)));
   assertEquals(read, want);
+
+  // How a sequence stops: the values handed out before it did, then END
+  // read, the input run out at a boundary, or a fault.
+  for (let k = 0; v.has(`end.${k}.packet`); k++) {
+    const r = new TlvReader(hex_to_bytes(v.s(`end.${k}.packet`)));
+    let n = 0;
+    let stop: string;
+    try {
+      for (const _ of r) n++;
+      stop = r.end() ?? "none";
+    } catch (err) {
+      stop = `errno:${(err as FaultError).errno ?? Errno.OK}`;
+    }
+    assertEquals(`${n}:${stop}`, v.s(`end.${k}.read`), `end.${k}`);
+  }
 
   // A length past what the packet holds: the reader refuses rather than
   // reading whatever follows.
