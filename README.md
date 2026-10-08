@@ -2,7 +2,7 @@
 
 xpute runs one program inside another, and gives it resources rather than abstractions. The **host** owns the platform — the clock, the memory, whatever reaches outside — and the **guest** owns none of it on its own account: it controls what it is granted. Everything the guest has, the host granted it, a slice at a time: the memory once at boot, and a quota of time on every turn. What the guest builds over them — its allocator, its scheduler, its tables — is its own, as a library operating system's is over an exokernel, without the hardware that enforces the grant.
 
-**xpute is both ends of that arrangement, and `core`, the generic code underneath them.** `core` is written in every language xpute has, and each end in the languages it is built in.
+**xpute is both ends of that arrangement, and `kit`, the generic code underneath them.** `kit` is written in every language xpute has, and each end in the languages it is built in.
 
 It was written for a program driven by TypeScript: compiled to one WebAssembly module in a browser tab, or linked into a native app. Nothing in xpute knows what that program computes.
 
@@ -18,7 +18,7 @@ It was written for a program driven by TypeScript: compiled to one WebAssembly m
             │                                                  │
             └──────────────────────────┬───────────────────────┘
                                        ▼
-           ┌─ one linear memory ─────────────────────────────────┐
+           ┌─ the core memory ───────────────────────────────────┐
            │ everything else crosses here, and nothing else does │
            └─────────────────────────────────────────────────────┘
 ```
@@ -31,28 +31,27 @@ What the guest cannot do itself — a file, a call to a device — it asks for i
 
 [ARCHITECTURE.md](./ARCHITECTURE.md) is what each piece is and why it is shaped that way: the memory, the rings, the turn, the handles, the contract either end must keep, the wire formats, the records.
 
-## `core` and `runtime`
+## `kit`, `guest` and `host`
 
-`core` is a kit and nothing more — collections, codecs, scalar math, an errno table, the wire formats. Link it and use it: it knows nothing of turns, hosts or memories.
+`kit` is that and nothing more — collections, codecs, scalar math, an errno table, the wire formats. Link it and use it: it knows nothing of turns, hosts or memories.
 
-Golden records under `spec/xpute/golden/` hold the languages to each other wherever bytes cross.
+Golden records under `spec/golden/` hold the languages to each other wherever bytes cross.
 
-`runtime` is the arrangement above. Its host end and its guest end are the two ends of one thing, not two implementations of it: a module on one side with nothing facing it is not a gap to fill, and what the two owe each other is not matching module lists but matching formats. Its guest end exists in more than one language, and those are one end, so they match as `core` does.
+`guest` and `host` are the arrangement above, named by the end each is. They are the two ends of one thing, not two implementations of it: a module on one side with nothing facing it is not a gap to fill, and what the two owe each other is not matching module lists but matching formats. The guest end exists in more than one language, and those are one end, so they match as `kit` does.
 
 ```text
-crates/xpute/core  ·  packages/xpute/core  ·  cpp/xpute/core     the same kit, in each language
-crates/xpute/runtime  ·  packages/xpute/runtime                  the guest end · the host end
-cpp/xpute/runtime                                                the guest end once more, in C++
-crates/xpute/conformance  ·  cpp/xpute/conformance               a guest in each, and the contract's traces
-packages/xpute/conformance                                       the host that runs the traces against them
-spec/xpute                                                       numbers all of them are generated from
+rust/kit  ·  ts/kit  ·  cpp/kit                the same kit, in each language
+rust/guest  ·  cpp/guest  ·  ts/host               the guest end, in each language · the host end
+rust/conformance  ·  cpp/conformance              a guest in each, and the contract's traces
+ts/conformance                                    the host that runs the traces against them
+spec                                              numbers all of them are generated from
 ```
 
 ## What it leaves to whoever uses it
 
 The line is drawn in the same place every time: xpute carries the mechanism, and the policy belongs to the program.
 
-- **It does not know what the guest computes.** No domain types reach `core`, which is what keeps it portable to a second program.
+- **It does not know what the guest computes.** No domain types reach `kit`, which is what keeps it portable to a second program.
 - **It does not choose the memory map.** It is told a base, a unit and a list of sizes, and answers where each range landed. What the ranges hold is the guest's.
 - **It does not choose an allocator.** The heap is one door, and what answers behind it is the guest's choice.
 - **It is not a transport.** Nothing here leaves the machine; what carries bytes to another one is the host's business.
@@ -69,16 +68,6 @@ deno task test    # deno test, cargo test and the C++ tests, the golden records 
                   # then the traces run against every guest, native and WebAssembly
 deno task lint    # deno lint
 ```
-
-## Where this comes from
-
-This is a copy. xpute is developed inside pixelet, a closed application that is its only consumer so far, and exported here whole — the layout is pixelet's own, so the day it moves for real nothing has to change. Pull requests are welcome as conversation, but the change has to land upstream.
-
-[plei.me](https://plei.me) is that application running, which is the only public view of this kit at work.
-
-Taken from **pixelet@14adf558d**.
-
-The files generated from `spec/xpute/` are checked in as pixelet generates them. The generator itself knows every one of pixelet's specs and did not come along, so this copy reads but does not regenerate them.
 
 ## License
 

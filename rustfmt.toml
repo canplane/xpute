@@ -1,2 +1,2 @@
-# Matches deno fmt's lineWidth, so the two halves of the repo wrap alike.
+# Matches deno fmt's lineWidth, so the Rust and the TypeScript wrap alike.
 max_width = 200

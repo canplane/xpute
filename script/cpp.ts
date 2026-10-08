@@ -8,7 +8,7 @@
 import { dirname, fromFileUrl, join, relative } from "@std/path";
 
 const ROOT = join(dirname(fromFileUrl(import.meta.url)), "..");
-const TREE = join(ROOT, "cpp/xpute");
+const TREE = join(ROOT, "cpp");
 const OUT = join(ROOT, "target/cpp");
 const CXX = Deno.env.get("CXX") ?? "c++";
 const WASI_CXX = join(Deno.env.get("WASI_SDK_PATH") ?? "/opt/wasi-sdk", "bin/clang++");
@@ -41,7 +41,7 @@ function sources(dir: string): string[] {
 }
 
 function testOnly(path: string): boolean {
-  return path.endsWith(".test.cpp") || path === "cpp/xpute/core/test.cpp" || path === "cpp/xpute/core/golden.cpp";
+  return path.endsWith(".test.cpp") || path === "cpp/kit/test.cpp" || path === "cpp/kit/golden.cpp";
 }
 
 async function run(cmd: string, args: string[]): Promise<void> {
