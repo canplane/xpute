@@ -1,6 +1,6 @@
 // @xpute/kit/collection/deque.ts
 // A deque over a caller-owned ring buffer. A pop from an empty deque is
-// undefined; a push onto a full one overwrites the front and is the caller's bug.
+// undefined; a push onto a full one throws ENOSPC.
 
 import type { u32 } from "@xpute/kit/abi/word.ts";
 import { Errno } from "@xpute/kit/status/errno.spec.ts";
@@ -77,7 +77,9 @@ export class Deque<T> {
 
   clear(): void {
     const cap = this.cap();
-    for (let i = 0; i < this.len; i++) this.buf[(this.head + i) % cap] = undefined;
+    for (let i = 0; i < this.len; i++) {
+      this.buf[(this.head + i) % cap] = undefined;
+    }
     this.head = 0;
     this.len = 0;
   }

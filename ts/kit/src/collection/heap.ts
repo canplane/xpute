@@ -1,5 +1,6 @@
 // @xpute/kit/collection/heap.ts
 // Binary min/max heaps over a caller-owned array, with no defensive checks.
+// A NaN key breaks the order.
 
 import type { primitive, u32 } from "../abi/word.ts";
 
@@ -24,7 +25,11 @@ export class MinHeap<K extends primitive, T> {
   }
 
   /** Assumes both child subtrees are already heaps. */
-  static heapify<K extends primitive, T>(a: Element<K, T>[], root: u32, size: u32): void {
+  static heapify<K extends primitive, T>(
+    a: Element<K, T>[],
+    root: u32,
+    size: u32,
+  ): void {
     let i = root;
     const e = a[i];
 
@@ -44,7 +49,9 @@ export class MinHeap<K extends primitive, T> {
   }
 
   static build<K extends primitive, T>(a: Element<K, T>[]): void {
-    for (let i = (a.length >> 1) - 1; i >= 0; i--) MinHeap.heapify(a, i, a.length);
+    for (let i = (a.length >> 1) - 1; i >= 0; i--) {
+      MinHeap.heapify(a, i, a.length);
+    }
   }
 
   build(): void {
@@ -82,6 +89,7 @@ export class MinHeap<K extends primitive, T> {
   }
 
   /** Requires a non-empty heap. */
+  /** The heap must not be empty. */
   replace_root(e: Element<K, T>): void {
     this.a[0] = e;
     MinHeap.heapify(this.a, 0, this.a.length);
@@ -104,7 +112,11 @@ export class MaxHeap<K extends primitive, T> {
   }
 
   /** Assumes both child subtrees are already heaps. */
-  static heapify<K extends primitive, T>(a: Element<K, T>[], root: u32, size: u32): void {
+  static heapify<K extends primitive, T>(
+    a: Element<K, T>[],
+    root: u32,
+    size: u32,
+  ): void {
     let i = root;
     const e = a[i];
 
@@ -124,7 +136,9 @@ export class MaxHeap<K extends primitive, T> {
   }
 
   static build<K extends primitive, T>(a: Element<K, T>[]): void {
-    for (let i = (a.length >> 1) - 1; i >= 0; i--) MaxHeap.heapify(a, i, a.length);
+    for (let i = (a.length >> 1) - 1; i >= 0; i--) {
+      MaxHeap.heapify(a, i, a.length);
+    }
   }
 
   build(): void {
@@ -162,6 +176,7 @@ export class MaxHeap<K extends primitive, T> {
   }
 
   /** Requires a non-empty heap. */
+  /** The heap must not be empty. */
   replace_root(e: Element<K, T>): void {
     this.a[0] = e;
     MaxHeap.heapify(this.a, 0, this.a.length);

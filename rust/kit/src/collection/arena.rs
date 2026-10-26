@@ -10,12 +10,6 @@ pub struct ArenaOptions {
     pub max_cap: u32,
 }
 
-impl Default for ArenaOptions {
-    fn default() -> ArenaOptions {
-        ArenaOptions { init_cap: 1 << 10, max_cap: 1 << 24 }
-    }
-}
-
 /// `truncate` drops nothing: a slot comes back in whatever state its last
 /// user left it, buffers still allocated, and the caller reinitializes it.
 pub struct Arena<T: Default> {
@@ -55,9 +49,8 @@ impl<T: Default> Arena<T> {
     }
 
     pub fn alloc(&mut self) -> Result<&mut T, MarshalError> {
-        // Saturating, so a doubling past u32 is refused rather than wrapping.
         if self.len_of >= self.cap_of {
-            self.grow(self.cap_of.saturating_mul(2).max(1))?;
+            self.grow(self.len_of.saturating_add(1))?;
         }
 
         let i = self.len_of as usize;
@@ -66,11 +59,7 @@ impl<T: Default> Arena<T> {
     }
 
     pub fn reserve(&mut self, cnt: u32) -> Result<(), MarshalError> {
-        let req = self.len_of.saturating_add(cnt);
-        if req > self.cap_of {
-            self.grow(self.cap_of.saturating_mul(2).max(req))?;
-        }
-        Ok(())
+        self.grow(self.len_of.saturating_add(cnt))
     }
 
     /// A `new_len` above the cursor is a bug, not a resize.
@@ -79,13 +68,15 @@ impl<T: Default> Arena<T> {
         self.len_of = new_len;
     }
 
-    fn grow(&mut self, new_cap: u32) -> Result<(), MarshalError> {
-        if new_cap <= self.cap_of {
+    /// Doubling stops at the cap, so the cap refuses only what does not fit.
+    fn grow(&mut self, req: u32) -> Result<(), MarshalError> {
+        if req <= self.cap_of {
             return Ok(());
         }
-        if new_cap > self.max_cap {
+        if req > self.max_cap {
             return Err(MarshalError::new(Errno::EOVERFLOW));
         }
+        let new_cap = self.cap_of.saturating_mul(2).clamp(req, self.max_cap);
 
         self.mem.reserve(new_cap as usize - self.mem.len());
         for _ in self.cap_of..new_cap {
@@ -108,7 +99,10 @@ pub struct ArenaGuard<'a, T: Default> {
 
 impl<'a, T: Default> ArenaGuard<'a, T> {
     fn new(arena: &'a mut Arena<T>) -> ArenaGuard<'a, T> {
-        ArenaGuard { mark: arena.len(), arena }
+        ArenaGuard {
+            mark: arena.len(),
+            arena,
+        }
     }
 }
 
