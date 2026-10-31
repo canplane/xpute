@@ -1,12 +1,12 @@
 // xpute-guest/ipc/sys.spec.rs
 //
-// GENERATED from spec/ipc/sys.json — do not edit.
+// GENERATED from spec/ipc/sys.json
 //
-// A guest's system calls: its files, the report that stopped it and the program's own
-// calls, as records in a stream (ipc/stream.rs) the host runs once each turn has returned
-// and before the next begins. A record may name memory the guest holds: the host reads or
-// writes it in that gap, and the guest keeps it that long. The directory says where the
-// stream is (key SYS).
+// A guest's hostcalls, its calls into its host: its files, the report that stopped it and
+// the program's own calls, as records in a stream (ipc/stream.rs) the host runs once each
+// turn has returned and before the next begins. A record may name memory the guest holds:
+// the host reads or writes it in that gap, and the guest keeps it that long. The toc
+// says where the stream is (key SYS).
 //
 // Files borrow Plan 9's file namespace, in POSIX's words. The guest issues the descriptor,
 // a generational handle, and names a file by a root the program numbers and a path below
@@ -17,10 +17,22 @@
 //
 // A program's own calls go in the same stream, numbered with the PROGRAM bit, and a host
 // that is not the program's refuses them.
+//
+// A program's hostcall the host answers from what it already holds may be run now instead:
+// the same record, laid past the last the turn has recorded and never published, its offset
+// handed to the host's `hostcall` entry, which runs it before it returns and answers
+// with a value or -errno. It writes only what the record names, and ENOSYS where the call
+// is not the program's or no program answers. xpute's own calls go in the stream alone.
 
 // Names as the spec spells them, so one record has one name on every side.
 // A table is generated whole, whether or not this crate calls an entry.
-#![allow(non_upper_case_globals, non_snake_case, dead_code)]
+#![allow(
+    non_upper_case_globals,
+    non_snake_case,
+    clippy::absolute_paths,
+    dead_code,
+    reason = "generated from the spec"
+)]
 
 /// Words before the first record: END, then a word kept at 0.
 pub const HEAD: u32 = 2;
@@ -35,7 +47,7 @@ pub mod op {
     /// fd, at, len: the `len` bytes at `at` added to what the file opened for writing holds.
     pub const WRITE: u32 = 3;
     /// fd: the descriptor ended. A file opened for writing is replaced by what was written; an
-    /// open not yet answered is cancelled, and never answered.
+    /// open not yet answered is canceled, and never answered.
     pub const CLOSE: u32 = 4;
     /// errno, line, column, a (low, high word), b (low, high word), then the file's bytes:
     /// the broken invariant the guest reports before it stops (xpute-kit status/bug.rs).
@@ -43,6 +55,26 @@ pub mod op {
     /// The bit every call a program numbers for itself carries.
     pub const PROGRAM: u32 = 2147483648;
     pub const KEYS: &[&str] = &["OPENAT", "READ", "WRITE", "CLOSE", "ABORT", "PROGRAM"];
+}
+
+/// How many words of arguments each call's record takes, as its `op` lists them; OPENAT's
+/// and ABORT's end in bytes after them.
+pub mod args {
+    pub const OPENAT: u32 = 3;
+    pub const READ: u32 = 3;
+    pub const WRITE: u32 = 3;
+    pub const CLOSE: u32 = 1;
+    pub const ABORT: u32 = 7;
+    pub const KEYS: &[&str] = &["OPENAT", "READ", "WRITE", "CLOSE", "ABORT"];
+}
+
+/// Where ABORT's two values lie among its arguments, each low word then high.
+pub mod abort {
+    /// a.
+    pub const A: u32 = 3;
+    /// b.
+    pub const B: u32 = 5;
+    pub const KEYS: &[&str] = &["A", "B"];
 }
 
 /// How OPENAT opens.

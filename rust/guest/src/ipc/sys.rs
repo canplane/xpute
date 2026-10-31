@@ -1,9 +1,10 @@
 // xpute-guest/ipc/sys.rs
 
-//! A guest's system calls, recorded in a stream the host runs after the turn
+//! A guest's hostcalls, recorded in a stream the host runs after the turn
 //! returns; anything a call names must live until the next rise. The guest
 //! issues its own descriptors as handles, so a late answer to a closed one
-//! names nothing. `openat` is answered by SYS_OPENED on a later turn.
+//! names nothing. `openat` is answered by SYS_OPENED on a later turn; a
+//! program's call made as a `hostcall`, before it returns.
 
 use core::panic::Location;
 
@@ -18,10 +19,11 @@ pub mod spec;
 pub type Fd = u32;
 
 // Each call's arguments, which its record takes as an array of this length.
-pub const OPENAT_ARGS: usize = 3;
-pub const READ_ARGS: usize = 3;
-pub const WRITE_ARGS: usize = 3;
-pub const CLOSE_ARGS: usize = 1;
+pub const OPENAT_ARGS: usize = spec::args::OPENAT as usize;
+pub const READ_ARGS: usize = spec::args::READ as usize;
+pub const WRITE_ARGS: usize = spec::args::WRITE as usize;
+pub const CLOSE_ARGS: usize = spec::args::CLOSE as usize;
+const ABORT_ARGS: usize = spec::args::ABORT as usize;
 
 /// The most one descriptor records in a turn, its name `path` bytes long: its
 /// open, a read or a write, and its close, twice where it is stopped.
@@ -97,6 +99,19 @@ impl Sys {
         self.stream.record(op, args, &[], Some(bytes));
     }
 
+    /// `call` run by the host before this returns, from what it already
+    /// holds: its value or its errno, ENOSPC where the record does not fit
+    /// past the turn's. What `args` name it writes during the call.
+    pub fn call_now(&mut self, op: u32, args: &[u32], bytes: &[u8]) -> Result<u32, Errno> {
+        xpute_kit::ensure!(op & spec::op::PROGRAM != 0, EINVAL, op);
+        let at = self
+            .stream
+            .past(op, args, Some(bytes))
+            .ok_or(Errno::ENOSPC)?;
+        let res = crate::hostcall::hostcall(at as u32);
+        u32::try_from(res).map_err(|_| Errno::of(res).unwrap_or(Errno::EPROTO))
+    }
+
     /// `call` where it fits with `reserve` bytes left after it; false, and
     /// nothing recorded, where it does not, for the caller to ask again a later turn.
     pub fn try_call(&mut self, op: u32, args: &[u32], bytes: &[u8], reserve: usize) -> bool {
@@ -113,15 +128,12 @@ impl Sys {
     /// Drops the turn's other calls and publishes the report alone, at once.
     pub fn abort(&mut self, errnum: Errno, at: &Location<'_>, a: u64, b: u64) {
         self.stream.publish();
-        let args = [
-            errnum as i32 as u32,
-            at.line(),
-            at.column(),
-            a as u32,
-            (a >> 32) as u32,
-            b as u32,
-            (b >> 32) as u32,
-        ];
+        let mut args: [u32; ABORT_ARGS] =
+            [errnum as i32 as u32, at.line(), at.column(), 0, 0, 0, 0];
+        for (i, v) in [(spec::abort::A, a), (spec::abort::B, b)] {
+            args[i as usize] = v as u32;
+            args[i as usize + 1] = (v >> 32) as u32;
+        }
         self.stream
             .record(spec::op::ABORT, &args, &[], Some(at.file().as_bytes()));
         self.stream.publish();

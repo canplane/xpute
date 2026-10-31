@@ -4,8 +4,10 @@
 
 #include <array>
 #include <cstring>
+#include <utility>
 
 #include "xpute/kit/status/bug.hpp"
+#include "xpute/guest/hostcall.hpp"
 
 namespace xpute {
 
@@ -39,6 +41,15 @@ void Sys::call(std::uint32_t op, std::span<const std::uint32_t> args, std::span<
     stream_.record(op, args, {}, bytes);
 }
 
+Result<std::uint32_t> Sys::call_now(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint8_t> bytes) noexcept {
+    ensure((op & sys::op::PROGRAM) != 0, Errno::einval, op);
+    std::optional<std::uint32_t> at = stream_.past(op, args, bytes);
+    if (!at) return make_error(ErrorClass::fault, Errno::enospc);
+    std::int32_t res = xpute::hostcall(*at);
+    if (res < 0) return make_error(ErrorClass::fault, errno_of(res).value_or(Errno::eproto));
+    return static_cast<std::uint32_t>(res);
+}
+
 bool Sys::try_call(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint8_t> bytes, std::uint32_t reserve) noexcept {
     if (!stream_.fits(record_bytes(args.size(), bytes.size()), reserve)) return false;
     call(op, args, bytes);
@@ -47,8 +58,11 @@ bool Sys::try_call(std::uint32_t op, std::span<const std::uint32_t> args, std::s
 
 void Sys::abort(Errno errnum, const std::source_location &at, std::uint64_t a, std::uint64_t b) noexcept {
     stream_.publish();
-    const std::array<std::uint32_t, 7> args{static_cast<std::uint32_t>(errnum), at.line(), at.column(), static_cast<std::uint32_t>(a),
-                                            static_cast<std::uint32_t>(a >> 32), static_cast<std::uint32_t>(b), static_cast<std::uint32_t>(b >> 32)};
+    std::array<std::uint32_t, ABORT_ARGS> args{static_cast<std::uint32_t>(errnum), at.line(), at.column()};
+    for (auto [i, v] : {std::pair{sys::abort::A, a}, std::pair{sys::abort::B, b}}) {
+        args[i] = static_cast<std::uint32_t>(v);
+        args[i + 1] = static_cast<std::uint32_t>(v >> 32);
+    }
     stream_.record(sys::op::ABORT, args, {}, bytes_of(at.file_name()));
     stream_.publish();
 }

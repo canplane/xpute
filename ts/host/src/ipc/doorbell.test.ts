@@ -1,6 +1,7 @@
 // @xpute/host/ipc/doorbell.test.ts
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { test } from "vitest";
+import assert from "node:assert/strict";
 
 import { InvariantError } from "@xpute/kit/status/error.ts";
 import { Doorbell } from "./doorbell.ts";
@@ -9,7 +10,7 @@ import { Ring, ring_bytes, slots_bytes } from "./ring.ts";
 const CAP = 8;
 const SLOT = 64;
 
-Deno.test("doorbell - a call from inside a listener is refused and leaves nothing submitted", () => {
+test("doorbell - a call from inside a listener is refused and leaves nothing submitted", () => {
   const sq_at = 8;
   const cq_at = sq_at + ring_bytes(CAP);
   const slots_at = cq_at + ring_bytes(CAP);
@@ -23,17 +24,24 @@ Deno.test("doorbell - a call from inside a listener is refused and leaves nothin
     SLOT,
   );
 
-  // A guest whose every turn raises one signal.
+  // A guest whose every turn raises one event.
   const door = new Doorbell(mem, sq_at, cq_at, () => {
     cq.push(0, 2);
     return -1;
   });
   let refused = 0;
-  door.signal = () => {
-    assertThrows(() => door.call(1, null, (result) => result), InvariantError);
+  door.listen(0, () => {
+    assert.throws(
+      () => door.call(1, 1, null, (result) => result),
+      InvariantError,
+    );
     refused++;
-  };
+  });
   door.ring(0);
-  assertEquals(refused, 1);
-  assertEquals(sq.len, 0, "the refused call is not in the submission ring");
+  assert.deepStrictEqual(refused, 1);
+  assert.deepStrictEqual(
+    sq.len,
+    0,
+    "the refused call is not in the submission ring",
+  );
 });

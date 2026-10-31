@@ -38,7 +38,7 @@ import type {
   U64Array,
   U8Array,
 } from "@xpute/kit/abi/array.ts";
-import { Errno } from "@xpute/kit/status/errno.spec.ts";
+import * as Errno from "@xpute/kit/status/errno.spec.ts";
 import { MarshalError } from "@xpute/kit/status/error.ts";
 
 import type { BranchNode, Node, NodeValue } from "./spec.ts";
@@ -151,7 +151,7 @@ const STRS_NODE = (items: string[] | null): Node => ({
 });
 
 function val_to_node(val: NodeValue<NodeView>): Node {
-  if (val instanceof NodeView) return (val.node);
+  if (val instanceof NodeView) return val.node;
 
   if (val === null) return NIL_NODE;
 
@@ -181,7 +181,7 @@ function val_to_node(val: NodeValue<NodeView>): Node {
   if (Array.isArray(val)) {
     const branch = new BranchViewImpl();
     for (const child of val) branch.put(child);
-    return (branch.node);
+    return branch.node;
   }
 
   throw new MarshalError(Errno.EINVAL);
@@ -235,7 +235,13 @@ export class TreeView extends NodeView {
     return this;
   }
 
-  /** A number lowers to i32 when it fits and f64 otherwise, a bigint to i64 (u64 needs `u64()`). */
+  /**
+   * A number lowers to i32 when it fits and f64 otherwise, a bigint to i64
+   * (u64 needs `u64()`). An object does not lower: which keys go and in what
+   * order is a schema's to say, and a schema that owns them lowers an object
+   * to an array with `to_tuple` and reads it back with `from_tuple`
+   * (wire/lower.ts).
+   */
   set<T extends NodeValue<NodeView>>(val: T): this {
     return this._set_node(val_to_node(val));
   }

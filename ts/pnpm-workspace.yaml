@@ -1,0 +1,3 @@
+# koffi opens a native guest.
+onlyBuiltDependencies:
+  - koffi

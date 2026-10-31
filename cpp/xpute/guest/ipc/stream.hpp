@@ -35,7 +35,7 @@ class Stream {
 
     std::uint32_t head_at() const noexcept { return at_; }
 
-    Memory memory() const noexcept { return mem_; }
+    Memory mem() const noexcept { return mem_; }
 
     std::uint32_t left() const noexcept { return (words_ - head_ - len_) * WORD; }
 
@@ -54,6 +54,12 @@ class Stream {
     void record(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint32_t> tail = {},
                 std::optional<std::span<const std::uint8_t>> bytes = std::nullopt, std::source_location at = std::source_location::current()) noexcept;
 
+    // A record laid past the last the turn has recorded and never published,
+    // for a hostcall: its offset in the memory, or none where it does not
+    // fit. The next record written takes its words.
+    std::optional<std::uint32_t> past(std::uint32_t op, std::span<const std::uint32_t> args,
+                                      std::optional<std::span<const std::uint8_t>> bytes = std::nullopt) noexcept;
+
     void publish() noexcept;
 
     // The records from here to `commit` are one: one that does not fit drops
@@ -69,6 +75,11 @@ class Stream {
     }
 
   private:
+    // A record's words past its op and count, from `w`: `args`, `tail`, and
+    // `bytes` as their count then words.
+    void fill(std::uint32_t w, std::span<const std::uint32_t> args, std::span<const std::uint32_t> tail,
+              std::optional<std::span<const std::uint8_t>> bytes) noexcept;
+
     Memory mem_;
     std::uint32_t at_;
     std::uint32_t words_;

@@ -45,13 +45,16 @@ export class IndexedMap<K extends numeric> {
   private mask: u32;
   private _size: u32 = 0;
 
-  constructor(private readonly traits: KeyTraits<K>, cap: u32 = 16) {
-    let size = 2;
-    while (size < cap * 2) size <<= 1;
-    this.table = new Uint32Array(size);
-    this.keys = this.take_keys(size >>> 1);
-    this.mask = size - 1;
-    this.shift = 32 - Math.log2(size);
+  private readonly traits: KeyTraits<K>;
+
+  constructor(traits: KeyTraits<K>, cap: u32 = 16) {
+    this.traits = traits;
+    let sz = 2;
+    while (sz < cap * 2) sz <<= 1;
+    this.table = new Uint32Array(sz);
+    this.keys = this.take_keys(sz >>> 1);
+    this.mask = sz - 1;
+    this.shift = 32 - Math.log2(sz);
   }
 
   get size(): u32 {
@@ -161,13 +164,13 @@ export class IndexedMap<K extends numeric> {
   }
 
   private grow(): void {
-    const size = this.table.length * 2;
-    const keys = this.take_keys(size >>> 1);
+    const sz = this.table.length * 2;
+    const keys = this.take_keys(sz >>> 1);
     keys.set(this.keys.subarray(0, this._size) as never);
     this.keys = keys;
-    this.table = new Uint32Array(size);
-    this.mask = size - 1;
-    this.shift = 32 - Math.log2(size);
+    this.table = new Uint32Array(sz);
+    this.mask = sz - 1;
+    this.shift = 32 - Math.log2(sz);
     for (let pos = 0; pos < this._size; pos++) this.place(keys[pos] as K, pos);
   }
 }

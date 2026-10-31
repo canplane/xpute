@@ -1,23 +1,31 @@
 // @xpute/host/ipc/sys.ts
 
 /**
- * The host's end of a guest's system calls (rust/guest/src/ipc/sys.rs):
+ * The host's end of a guest's hostcalls (rust/guest/src/ipc/sys.rs):
  * the records a turn left, run after it returns and before the next begins, so
- * whatever they name in guest memory is written before the guest reads it.
+ * whatever they name in guest memory is written before the guest reads it; and
+ * a program's call made as a hostcall, one record run before the hostcall
+ * returns.
  */
 
 import type { U32Array, U8Array } from "@xpute/kit/abi/array.ts";
 import type { i32, u32 } from "@xpute/kit/abi/word.ts";
-import { Errno, strerror } from "@xpute/kit/status/errno.spec.ts";
+import * as Errno from "@xpute/kit/status/errno.spec.ts";
+import { strerror } from "@xpute/kit/status/errno.spec.ts";
 import { InvariantError } from "@xpute/kit/status/error.ts";
 import { each_record, text_of } from "./stream.ts";
-import { flag, HEAD, op } from "./sys.spec.ts";
+import { abort, args, flag, HEAD, op } from "./sys.spec.ts";
 
 /** Why an open did not answer with a file: an errno, and whatever number the
  * host refused with (an HTTP status) for a reader to print. */
 export class FileError extends Error {
-  constructor(readonly errnum: Errno, readonly detail: u32 = 0) {
+  readonly errnum: i32;
+  readonly detail: u32;
+
+  constructor(errnum: i32, detail: u32 = 0) {
     super(detail === 0 ? strerror(errnum) : `${strerror(errnum)} (${detail})`);
+    this.errnum = errnum;
+    this.detail = detail;
   }
 }
 
@@ -42,12 +50,22 @@ export interface Fs {
   commit(root: u32, path: string, bytes: U8Array): void;
 }
 
+/** What answers a program's hostcalls. Each part a program leaves out is
+ * refused: an open with ENOENT (a write's with EROFS), a call of its own with
+ * ENOSYS; a report it does not take is logged. */
 export interface SysHost {
-  fs: Fs;
-  abort(report: Abort): void;
+  fs?: Fs;
+  abort?(report: Abort): void;
   /** A call of the program's own: its number, the record's words, and where
-   * its arguments begin in them. */
-  program(code: u32, w: U32Array, a: u32): void;
+   * its arguments begin in them. A hostcall's answer is what it returns, 0
+   * for none. */
+  program?(code: u32, w: U32Array, a: u32): i32 | void;
+}
+
+function logged(r: Abort): void {
+  console.error(
+    `[xpute] stopped: ${strerror(r.errnum)} at ${r.file}:${r.line}:${r.column} (${r.a}, ${r.b})`,
+  );
 }
 
 interface File {
@@ -60,28 +78,41 @@ interface File {
 
 /** No name empty, `.` or `..`, so a path never leaves its root. */
 function walks_down(path: string): boolean {
-  return path.split("/").every((name) =>
-    name !== "" && name !== "." && name !== ".."
-  );
+  return path
+    .split("/")
+    .every((name) => name !== "" && name !== "." && name !== "..");
 }
 
 export class Sys {
   readonly files = new Map<u32, File>();
 
-  /** `opened` answers an open: a size, or an errno and the host's detail. */
-  constructor(
-    private readonly host: SysHost,
-    private readonly opened: (fd: u32, res: i32, detail: u32) => void,
-  ) {}
+  private readonly host: SysHost;
+  private readonly opened: (fd: u32, res: i32, detail: u32) => void;
 
-  run(memory: ArrayBuffer, at: u32): void {
-    each_record(memory, at, HEAD, this.record);
+  /** `opened` answers an open: a size, or an errno and the host's detail. */
+  constructor(host: SysHost, opened: (fd: u32, res: i32, detail: u32) => void) {
+    this.host = host;
+    this.opened = opened;
+  }
+
+  run(mem: ArrayBuffer, at: u32): void {
+    each_record(mem, at, HEAD, this.record);
+  }
+
+  /** The hostcall's record at `at`, run now: the program's answer, or ENOSYS
+   * for a call that is not the program's. */
+  call_now(mem: ArrayBuffer, at: u32): i32 {
+    const [code, n] = new Uint32Array(mem, at, 2);
+    if ((code & op.PROGRAM) === 0) return Errno.ENOSYS;
+    if (!this.host.program) return Errno.ENOSYS;
+    const w = new Uint32Array(mem, at, 2 + n) as U32Array;
+    return this.host.program(code, w, 2) ?? 0;
   }
 
   private readonly record = (code: u32, w: U32Array, a: u32): void => {
     switch (code) {
       case op.OPENAT:
-        this.openat(w[a], w[a + 1], w[a + 2], text_of(w, a + 3));
+        this.openat(w[a], w[a + 1], w[a + 2], text_of(w, a + args.OPENAT));
         break;
       case op.READ: {
         const bytes = this.files.get(w[a])?.bytes;
@@ -111,24 +142,27 @@ export class Sys {
             whole.set(b, off);
             off += b.byteLength;
           }
-          this.host.fs.commit(file.root, file.path, whole);
+          this.host.fs?.commit(file.root, file.path, whole);
         }
         break;
       }
       case op.ABORT: {
-        const num = (i: u32) => BigInt(w[a + i]) | BigInt(w[a + i + 1]) << 32n;
-        this.host.abort({
+        const num = (i: u32) =>
+          BigInt(w[a + i]) | (BigInt(w[a + i + 1]) << 32n);
+        (this.host.abort ?? logged)({
           errnum: w[a] | 0,
           line: w[a + 1],
           column: w[a + 2],
-          a: num(3),
-          b: num(5),
-          file: text_of(w, a + 7),
+          a: num(abort.A),
+          b: num(abort.B),
+          file: text_of(w, a + args.ABORT),
         });
         break;
       }
       default:
-        if ((code & op.PROGRAM) === 0) throw new InvariantError(Errno.ENOSYS);
+        if ((code & op.PROGRAM) === 0 || !this.host.program) {
+          throw new InvariantError(Errno.ENOSYS);
+        }
         this.host.program(code, w, a);
     }
   };
@@ -157,9 +191,8 @@ export class Sys {
           }`,
         );
       }
-      const [errnum, detail] = err instanceof FileError
-        ? [err.errnum, err.detail]
-        : [Errno.EIO, 0];
+      const [errnum, detail] =
+        err instanceof FileError ? [err.errnum, err.detail] : [Errno.EIO, 0];
       answer(errnum, detail);
     };
     const read = (bytes: U8Array) => {
@@ -170,13 +203,18 @@ export class Sys {
     if (!walks_down(path)) {
       return queueMicrotask(() => failed(new FileError(Errno.EACCES)));
     }
+    const fs = this.host.fs;
+    if (!fs) {
+      const errnum = flags === flag.O_WRONLY ? Errno.EROFS : Errno.ENOENT;
+      return queueMicrotask(() => failed(new FileError(errnum)));
+    }
     if (flags === flag.O_WRONLY) {
       file.written = [];
       return queueMicrotask(() => answer(0, 0));
     }
     let got: U8Array | Promise<U8Array>;
     try {
-      got = this.host.fs.open(root, path, file.controller.signal);
+      got = fs.open(root, path, file.controller.signal);
     } catch (err) {
       return queueMicrotask(() => failed(err));
     }

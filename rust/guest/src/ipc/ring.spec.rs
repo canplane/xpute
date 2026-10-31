@@ -1,6 +1,6 @@
 // xpute-guest/ipc/ring.spec.rs
 //
-// GENERATED from spec/ipc/ring.json — do not edit.
+// GENERATED from spec/ipc/ring.json
 //
 // A single-producer, single-consumer ring of frames (frame.json) in memory both sides
 // see, named by its offset so it means the same to either. A header, then the frames;
@@ -10,7 +10,13 @@
 
 // Names as the spec spells them, so one record has one name on every side.
 // A table is generated whole, whether or not this crate calls an entry.
-#![allow(non_upper_case_globals, non_snake_case, dead_code)]
+#![allow(
+    non_upper_case_globals,
+    non_snake_case,
+    clippy::absolute_paths,
+    dead_code,
+    reason = "generated from the spec"
+)]
 
 /// How many frames, a power of two.
 pub const CAP: u32 = 0;

@@ -2,10 +2,11 @@
 
 /** Holds the TypeScript side to golden/wire/tlv.tsv, which every language's TLV must match. */
 
-import { assertEquals } from "@std/assert";
+import { test } from "vitest";
+import assert from "node:assert/strict";
 
 import { Golden } from "@xpute/kit/golden.ts";
-import { Errno } from "@xpute/kit/status/errno.spec.ts";
+import * as Errno from "@xpute/kit/status/errno.spec.ts";
 import { FaultError } from "@xpute/kit/status/error.ts";
 import { bytes_to_hex, hex_to_bytes } from "@xpute/kit/codec/encoding.ts";
 import { TlvReader, type TlvValue, TlvWriter } from "@xpute/kit/wire/tlv.ts";
@@ -15,12 +16,16 @@ function show(v: TlvValue): string {
   return `${typeof v}:${v}`;
 }
 
-Deno.test("tlv computes what the typescript computes", async () => {
+test("tlv computes what the typescript computes", async () => {
   const v = await Golden.load("golden/wire/tlv.tsv");
 
   const w = new TlvWriter(4);
   w.u8(200).i8(-3).u16(65535).i16(-2).u32(4000000000).i32(-7);
-  w.u64(1n << 63n).i64(-(1n << 40n)).f32(0.25).f64(-1.5).bool(true);
+  w.u64(1n << 63n)
+    .i64(-(1n << 40n))
+    .f32(0.25)
+    .f64(-1.5)
+    .bool(true);
   w.str("€€").bytes(new Uint8Array([9, 8, 7]));
   w.write_all([
     true,
@@ -34,14 +39,14 @@ Deno.test("tlv computes what the typescript computes", async () => {
     "s",
     new Uint8Array([1]),
   ]);
-  const packet = w.finish();
+  const pkt = w.finish();
 
-  assertEquals(bytes_to_hex(packet), v.s("packet"));
+  assert.deepStrictEqual(bytes_to_hex(pkt), v.s("packet"));
 
-  const read = new TlvReader(packet).read_all().map(show);
+  const read = new TlvReader(pkt).read_all().map(show);
   const want: string[] = [];
   v.each("read", (k) => want.push(v.s(k)));
-  assertEquals(read, want);
+  assert.deepStrictEqual(read, want);
 
   // How a sequence stops: the values handed out before it did, then END
   // read, the input run out at a boundary, or a fault.
@@ -55,7 +60,7 @@ Deno.test("tlv computes what the typescript computes", async () => {
     } catch (err) {
       stop = `errno:${(err as FaultError).errnum ?? Errno.OK}`;
     }
-    assertEquals(`${n}:${stop}`, v.s(`end.${k}.read`), `end.${k}`);
+    assert.deepStrictEqual(`${n}:${stop}`, v.s(`end.${k}.read`), `end.${k}`);
   }
 
   // A length past what the packet holds: the reader refuses rather than
@@ -66,5 +71,5 @@ Deno.test("tlv computes what the typescript computes", async () => {
   } catch (err) {
     huge = `errno:${(err as FaultError).errnum ?? Errno.OK}`;
   }
-  assertEquals(huge, v.s("huge.read"));
+  assert.deepStrictEqual(huge, v.s("huge.read"));
 });

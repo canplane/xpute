@@ -1,12 +1,13 @@
 // @xpute/host/ipc/sys.test.ts
 
-/** Runs spec/conformance/sys/file.tsv against the host's end of the system calls. */
+/** Runs spec/conformance/sys/file.tsv against the host's end of the hostcalls. */
 
-import { assertEquals } from "@std/assert";
+import { test } from "vitest";
+import assert from "node:assert/strict";
 
 import type { U8Array } from "@xpute/kit/abi/array.ts";
 import { Golden } from "@xpute/kit/golden.ts";
-import { Errno } from "@xpute/kit/status/errno.spec.ts";
+import * as Errno from "@xpute/kit/status/errno.spec.ts";
 import { END } from "./stream.ts";
 import { FileError, type Fs, Sys } from "./sys.ts";
 import { flag, HEAD, op } from "./sys.spec.ts";
@@ -18,7 +19,7 @@ const hex = (s: string): U8Array =>
 const text = new TextEncoder();
 
 class Turn {
-  readonly memory = new ArrayBuffer(1 << 16);
+  readonly mem = new ArrayBuffer(1 << 16);
   writes = 0;
   private words: number[] = [];
 
@@ -34,7 +35,7 @@ class Turn {
   }
 
   publish(): void {
-    const w = new Uint32Array(this.memory, 0, HEAD + this.words.length);
+    const w = new Uint32Array(this.mem, 0, HEAD + this.words.length);
     w.fill(0);
     w[END] = this.words.length;
     w.set(this.words, HEAD);
@@ -61,10 +62,9 @@ async function run(g: Golden, scenario: string): Promise<void> {
       const b = kept.get(key);
       if (b === undefined || b === "ENOENT") throw new FileError(Errno.ENOENT);
       if (b === "later") {
-        return new Promise((
-          res,
-          rej,
-        ) => (waiting.set(key, res), failing.set(key, rej)));
+        return new Promise(
+          (res, rej) => (waiting.set(key, res), failing.set(key, rej)),
+        );
       }
       return hex(b);
     },
@@ -88,11 +88,15 @@ async function run(g: Golden, scenario: string): Promise<void> {
         kept.set(`${a[0]} ${a[1]}`, a[2]);
         break;
       case "openat":
-        turn.record(op.OPENAT, [
-          Number(a[0]),
-          Number(a[1]),
-          a[2] === "wr" ? flag.O_WRONLY : flag.O_RDONLY,
-        ], text.encode(path(a[3])));
+        turn.record(
+          op.OPENAT,
+          [
+            Number(a[0]),
+            Number(a[1]),
+            a[2] === "wr" ? flag.O_WRONLY : flag.O_RDONLY,
+          ],
+          text.encode(path(a[3])),
+        );
         break;
       case "read":
         turn.record(op.READ, [Number(a[0]), SCRATCH, Number(a[1])]);
@@ -101,7 +105,7 @@ async function run(g: Golden, scenario: string): Promise<void> {
         const bytes = text.encode(a[1]);
         // Each write its own bytes: the host copies them only once the turn is run.
         const at_ = SCRATCH + 4096 + 64 * turn.writes++;
-        new Uint8Array(turn.memory, at_, bytes.length).set(bytes);
+        new Uint8Array(turn.mem, at_, bytes.length).set(bytes);
         turn.record(op.WRITE, [Number(a[0]), at_, bytes.length]);
         break;
       }
@@ -110,7 +114,7 @@ async function run(g: Golden, scenario: string): Promise<void> {
         break;
       case "turn":
         turn.publish();
-        sys.run(turn.memory, 0);
+        sys.run(turn.mem, 0);
         await settle();
         break;
       case "deliver": {
@@ -129,21 +133,21 @@ async function run(g: Golden, scenario: string): Promise<void> {
               Number(a[1]),
               /^\d+$/.test(a[2]) ? Number(a[2]) : errno(a[2]),
             ];
-            assertEquals(answers.shift(), want, at);
+            assert.deepStrictEqual(answers.shift(), want, at);
             break;
           }
           case "quiet":
-            assertEquals(answers, [], at);
+            assert.deepStrictEqual(answers, [], at);
             break;
           case "read":
-            assertEquals(
-              Array.from(new Uint8Array(turn.memory, SCRATCH, a[1].length / 2)),
+            assert.deepStrictEqual(
+              Array.from(new Uint8Array(turn.mem, SCRATCH, a[1].length / 2)),
               Array.from(hex(a[1])),
               at,
             );
             break;
           case "commit":
-            assertEquals(commits.get(`${a[1]} ${a[2]}`), a[3], at);
+            assert.deepStrictEqual(commits.get(`${a[1]} ${a[2]}`), a[3], at);
             break;
           default:
             throw new Error(`${at}: no such expectation`);
@@ -155,7 +159,7 @@ async function run(g: Golden, scenario: string): Promise<void> {
   }
 }
 
-Deno.test("the file service keeps the trace", async () => {
+test("the file service keeps the trace", async () => {
   const g = await Golden.load("conformance/sys/file.tsv");
   for (const scenario of g.s("scenarios").split(" ")) await run(g, scenario);
 });

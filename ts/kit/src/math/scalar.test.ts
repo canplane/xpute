@@ -2,13 +2,15 @@
 
 /** Holds the TypeScript side to golden/math/scalar.tsv, bit for bit. */
 
-import { assertEquals } from "@std/assert";
+import { test } from "vitest";
+import assert from "node:assert/strict";
 
 import { Golden } from "@xpute/kit/golden.ts";
 import {
   approx_eq,
   ceil_to_step,
   clamp,
+  EPS,
   floor_to_step,
   inv_lerp,
   lerp,
@@ -24,23 +26,23 @@ const bits = (x: number): bigint => {
   return view.getBigUint64(0);
 };
 
-Deno.test("scalar computes what the record holds", async () => {
+test("scalar computes what the record holds", async () => {
   const v = await Golden.load("golden/math/scalar.tsv");
   v.each("", (k) => {
     const x = v.f64(`${k}.x`);
     const s = v.f64(`${k}.s`);
     const same = (name: string, got: number) =>
-      assertEquals(
+      assert.deepStrictEqual(
         bits(got),
         bits(v.f64(`${k}.${name}`)),
         `${k}.${name}(${x}, ${s}) = ${got}`,
       );
-    assertEquals(
+    assert.deepStrictEqual(
       approx_eq(x, x + s * 1e-6),
       v.bool(`${k}.approx_eq`),
       `${k}.approx_eq`,
     );
-    assertEquals(near(x, s, 0.3), v.bool(`${k}.near`), `${k}.near`);
+    assert.deepStrictEqual(near(x, s, 0.3), v.bool(`${k}.near`), `${k}.near`);
     same("lerp", lerp(x, s, 0.3));
     same("inv_lerp", inv_lerp(x, -s, s * 2));
     same("remap", remap(x, -1, 1, 0, s));
@@ -50,4 +52,9 @@ Deno.test("scalar computes what the record holds", async () => {
     same("round_to_step", round_to_step(x, s));
     same("ceil_to_step", ceil_to_step(x, s));
   });
+});
+
+test("the tolerance is the record's", async () => {
+  const v = await Golden.load("golden/math/scalar.tsv");
+  assert.deepStrictEqual(bits(EPS), bits(v.f64("eps")));
 });

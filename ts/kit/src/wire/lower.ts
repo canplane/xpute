@@ -2,22 +2,18 @@
 
 // A record to a tuple and back in a schema's key order, since XTP lowers arrays, not objects.
 
-import { Errno } from "@xpute/kit/status/errno.spec.ts";
+import * as Errno from "@xpute/kit/status/errno.spec.ts";
 import { MarshalError } from "@xpute/kit/status/error.ts";
 
 export function to_tuple<T extends Record<PropertyKey, unknown>>(
   obj: T,
   keys: readonly (keyof T)[],
 ): T[keyof T][] {
-  const len = keys.length;
-  const out: T[keyof T][] = new Array(len);
-
-  for (let i = 0; i < len; i++) {
+  return Array.from({ length: keys.length }, (_, i) => {
     const key = keys[i];
     if (!(key in obj)) throw new MarshalError(Errno.EINVAL);
-    out[i] = obj[key];
-  }
-  return out;
+    return obj[key];
+  });
 }
 
 export function from_tuple<T extends Record<PropertyKey, unknown>>(

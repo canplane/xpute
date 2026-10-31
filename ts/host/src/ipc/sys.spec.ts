@@ -1,12 +1,12 @@
 // @xpute/host/ipc/sys.spec.ts
 //
-// GENERATED from spec/ipc/sys.json — do not edit.
+// GENERATED from spec/ipc/sys.json
 //
-// A guest's system calls: its files, the report that stopped it and the program's own
-// calls, as records in a stream (ipc/stream.rs) the host runs once each turn has returned
-// and before the next begins. A record may name memory the guest holds: the host reads or
-// writes it in that gap, and the guest keeps it that long. The directory says where the
-// stream is (key SYS).
+// A guest's hostcalls, its calls into its host: its files, the report that stopped it and
+// the program's own calls, as records in a stream (ipc/stream.rs) the host runs once each
+// turn has returned and before the next begins. A record may name memory the guest holds:
+// the host reads or writes it in that gap, and the guest keeps it that long. The toc
+// says where the stream is (key SYS).
 //
 // Files borrow Plan 9's file namespace, in POSIX's words. The guest issues the descriptor,
 // a generational handle, and names a file by a root the program numbers and a path below
@@ -17,6 +17,12 @@
 //
 // A program's own calls go in the same stream, numbered with the PROGRAM bit, and a host
 // that is not the program's refuses them.
+//
+// A program's hostcall the host answers from what it already holds may be run now instead:
+// the same record, laid past the last the turn has recorded and never published, its offset
+// handed to the host's `hostcall` entry, which runs it before it returns and answers
+// with a value or -errno. It writes only what the record names, and ENOSYS where the call
+// is not the program's or no program answers. xpute's own calls go in the stream alone.
 
 import type { u32 } from "@xpute/kit/abi/word.ts";
 
@@ -33,13 +39,31 @@ export const op = {
   /** fd, at, len: the `len` bytes at `at` added to what the file opened for writing holds. */
   WRITE: 3 as number,
   /** fd: the descriptor ended. A file opened for writing is replaced by what was written; an
-   * open not yet answered is cancelled, and never answered. */
+   * open not yet answered is canceled, and never answered. */
   CLOSE: 4 as number,
   /** errno, line, column, a (low, high word), b (low, high word), then the file's bytes:
    * the broken invariant the guest reports before it stops (xpute-kit status/bug.rs). */
   ABORT: 5 as number,
   /** The bit every call a program numbers for itself carries. */
   PROGRAM: 2147483648 as number,
+} as const;
+
+/** How many words of arguments each call's record takes, as its `op` lists them; OPENAT's
+ * and ABORT's end in bytes after them. */
+export const args = {
+  OPENAT: 3 as number,
+  READ: 3 as number,
+  WRITE: 3 as number,
+  CLOSE: 1 as number,
+  ABORT: 7 as number,
+} as const;
+
+/** Where ABORT's two values lie among its arguments, each low word then high. */
+export const abort = {
+  /** a. */
+  A: 3 as number,
+  /** b. */
+  B: 5 as number,
 } as const;
 
 /** How OPENAT opens. */

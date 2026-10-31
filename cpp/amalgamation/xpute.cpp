@@ -15,14 +15,14 @@ namespace {
 constexpr char HEX[] = "0123456789abcdef";
 constexpr char B64URL[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-int hex_value(char c) noexcept {
+int hex_val(char c) noexcept {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
 
-int b64url_value(char c) noexcept {
+int b64url_val(char c) noexcept {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
     if (c >= '0' && c <= '9') return c - '0' + 52;
@@ -47,8 +47,8 @@ Result<std::size_t> hex_decode(std::string_view in, std::span<std::uint8_t> out)
     if (in.size() % 2 != 0) return marshal_error(Errno::ebadmsg);
     ensure(out.size() >= in.size() / 2, Errno::enospc, out.size(), in.size());
     for (std::size_t i = 0; i < in.size(); i += 2) {
-        int hi = hex_value(in[i]);
-        int lo = hex_value(in[i + 1]);
+        int hi = hex_val(in[i]);
+        int lo = hex_val(in[i + 1]);
         if (hi < 0 || lo < 0) return marshal_error(Errno::ebadmsg);
         out[i / 2] = static_cast<std::uint8_t>(hi << 4 | lo);
     }
@@ -87,7 +87,7 @@ Result<std::size_t> base64url_decode(std::string_view in, std::span<std::uint8_t
         std::size_t n = in.size() - i < 4 ? in.size() - i : 4;
         std::uint32_t w = 0;
         for (std::size_t k = 0; k < 4; k++) {
-            int v = k < n ? b64url_value(in[i + k]) : 0;
+            int v = k < n ? b64url_val(in[i + k]) : 0;
             if (v < 0) return marshal_error(Errno::ebadmsg);
             w = w << 6 | static_cast<std::uint32_t>(v);
         }
@@ -207,7 +207,7 @@ static std::optional<std::size_t> skip_number(std::string_view s, std::size_t at
     return at;
 }
 
-static std::optional<std::size_t> skip_value(std::string_view s, std::size_t at, std::uint32_t depth) noexcept {
+static std::optional<std::size_t> skip_val(std::string_view s, std::size_t at, std::uint32_t depth) noexcept {
     if (depth > MAX_DEPTH || at >= s.size()) return std::nullopt;
     auto literal = [&](std::string_view word) -> std::optional<std::size_t> {
         if (s.substr(at, word.size()) == word) return at + word.size();
@@ -222,7 +222,7 @@ static std::optional<std::size_t> skip_value(std::string_view s, std::size_t at,
         std::size_t i = skip_ws(s, at + 1);
         if (i < s.size() && s[i] == ']') return i + 1;
         for (;;) {
-            std::optional<std::size_t> end = skip_value(s, i, depth + 1);
+            std::optional<std::size_t> end = skip_val(s, i, depth + 1);
             if (!end) return std::nullopt;
             i = skip_ws(s, *end);
             if (i >= s.size()) return std::nullopt;
@@ -240,7 +240,7 @@ static std::optional<std::size_t> skip_value(std::string_view s, std::size_t at,
             if (!key) return std::nullopt;
             i = skip_ws(s, *key);
             if (i >= s.size() || s[i] != ':') return std::nullopt;
-            std::optional<std::size_t> end = skip_value(s, skip_ws(s, i + 1), depth + 1);
+            std::optional<std::size_t> end = skip_val(s, skip_ws(s, i + 1), depth + 1);
             if (!end) return std::nullopt;
             i = skip_ws(s, *end);
             if (i >= s.size()) return std::nullopt;
@@ -255,7 +255,7 @@ static std::optional<std::size_t> skip_value(std::string_view s, std::size_t at,
 
 std::optional<JsonValue> read_json(std::string_view text) noexcept {
     std::size_t start = skip_ws(text, 0);
-    std::optional<std::size_t> end = skip_value(text, start, 0);
+    std::optional<std::size_t> end = skip_val(text, start, 0);
     if (!end || skip_ws(text, *end) != text.size()) return std::nullopt;
     return JsonValue(text.substr(start, *end - start));
 }
@@ -333,11 +333,11 @@ std::optional<JsonValue> JsonValue::get(std::string_view key) const noexcept {
     return last;
 }
 
-std::optional<JsonValue> JsonValue::at(std::size_t index) const noexcept {
+std::optional<JsonValue> JsonValue::at(std::size_t idx) const noexcept {
     JsonItems it = items();
     for (std::size_t i = 0;; i++) {
         std::optional<JsonValue> v = it.next();
-        if (!v || i == index) return v;
+        if (!v || i == idx) return v;
     }
 }
 
@@ -348,7 +348,7 @@ std::optional<JsonValue> JsonItems::next() noexcept {
         return std::nullopt;
     }
     // The text was checked whole.
-    std::size_t end = *skip_value(s_, start, 0);
+    std::size_t end = *skip_val(s_, start, 0);
     at_ = skip_ws(s_, end) + 1;
     return JsonValue(s_.substr(start, end - start));
 }
@@ -360,10 +360,10 @@ std::optional<std::pair<JsonStr, JsonValue>> JsonFields::next() noexcept {
         return std::nullopt;
     }
     std::size_t key_end = *skip_string(s_, key_at);
-    std::size_t value_at = skip_ws(s_, skip_ws(s_, key_end) + 1);
-    std::size_t value_end = *skip_value(s_, value_at, 0);
-    at_ = skip_ws(s_, value_end) + 1;
-    return std::pair{JsonStr(s_.substr(key_at + 1, key_end - key_at - 2)), JsonValue(s_.substr(value_at, value_end - value_at))};
+    std::size_t val_at = skip_ws(s_, skip_ws(s_, key_end) + 1);
+    std::size_t val_end = *skip_val(s_, val_at, 0);
+    at_ = skip_ws(s_, val_end) + 1;
+    return std::pair{JsonStr(s_.substr(key_at + 1, key_end - key_at - 2)), JsonValue(s_.substr(val_at, val_end - val_at))};
 }
 
 std::optional<std::string_view> JsonStr::as_plain() const noexcept {
@@ -764,17 +764,17 @@ constexpr std::uint64_t word_up(std::uint64_t n) noexcept {
 } // namespace
 
 PacketWriter::PacketWriter(std::span<std::uint8_t> buf) noexcept : buf_(buf.first(std::min<std::size_t>(buf.size(), MAX_PKT_SZ))) {
-    if (buf_.size() < HDR_SZ) error_ = marshal_error(Errno::einval);
+    if (buf_.size() < HDR_SZ) err_ = marshal_error(Errno::einval);
     else std::memset(buf_.data(), 0, HDR_SZ);
 }
 
 std::optional<std::uint32_t> PacketWriter::spoil(Errno errnum) noexcept {
-    if (!error_) error_ = marshal_error(errnum);
+    if (!err_) err_ = marshal_error(errnum);
     return std::nullopt;
 }
 
 std::optional<std::uint32_t> PacketWriter::reserve(std::uint32_t unit, std::uint64_t bytes) noexcept {
-    if (error_) return std::nullopt;
+    if (err_) return std::nullopt;
     std::uint64_t base = (std::uint64_t{lim_} + unit - 1) & ~std::uint64_t{unit - 1};
     std::uint64_t end = base + bytes;
     if (end > buf_.size()) return spoil(Errno::eoverflow);
@@ -784,9 +784,9 @@ std::optional<std::uint32_t> PacketWriter::reserve(std::uint32_t unit, std::uint
 }
 
 PacketWriter &PacketWriter::entry(std::optional<std::uint32_t> at, NodeType type) noexcept {
-    ensure(frame_.written < frame_.count, Errno::enospc, frame_.count);
+    ensure(frame_.written < frame_.cnt, Errno::enospc, frame_.cnt);
     if (frame_.root) root_type_ = type;
-    else if (!error_) set_word(buf_, frame_.base + WORD_SZ + frame_.written * WORD_SZ, at ? *at - frame_.base : 0, type);
+    else if (!err_) set_word(buf_, frame_.base + WORD_SZ + frame_.written * WORD_SZ, at ? *at - frame_.base : 0, type);
     frame_.written++;
     return *this;
 }
@@ -817,7 +817,7 @@ std::uint32_t PacketWriter::str_payload() const noexcept {
 }
 
 std::optional<std::uint32_t> PacketWriter::str_room() noexcept {
-    if (error_) return std::nullopt;
+    if (err_) return std::nullopt;
     std::uint64_t payload = word_up(lim_) + WORD_SZ;
     if (payload > buf_.size()) return spoil(Errno::eoverflow);
     return static_cast<std::uint32_t>(buf_.size() - payload);
@@ -868,16 +868,16 @@ PacketWriter &PacketWriter::strs(std::optional<std::span<const std::string_view>
     return entry(at, type_of(SequenceType::strs));
 }
 
-std::optional<std::uint32_t> PacketWriter::branch_open(std::uint32_t count) noexcept {
-    std::optional<std::uint32_t> at = reserve(WORD_SZ, WORD_SZ + std::uint64_t{count} * WORD_SZ);
-    if (at) set_word(buf_, *at, count, RESERVED);
+std::optional<std::uint32_t> PacketWriter::branch_open(std::uint32_t cnt) noexcept {
+    std::optional<std::uint32_t> at = reserve(WORD_SZ, WORD_SZ + std::uint64_t{cnt} * WORD_SZ);
+    if (at) set_word(buf_, *at, cnt, RESERVED);
     return at;
 }
 
 // A branch ends on a word, so what follows it starts where the encoder
 // starts it.
 std::optional<std::uint32_t> PacketWriter::branch_close(std::optional<std::uint32_t> at) noexcept {
-    if (!at || error_) return at;
+    if (!at || err_) return at;
     std::uint64_t end = word_up(lim_);
     if (end > buf_.size()) return spoil(Errno::eoverflow);
     std::memset(buf_.data() + lim_, 0, end - lim_);
@@ -885,24 +885,24 @@ std::optional<std::uint32_t> PacketWriter::branch_close(std::optional<std::uint3
     return at;
 }
 
-PacketWriter &PacketWriter::graft(std::span<const std::uint8_t> packet) noexcept {
+PacketWriter &PacketWriter::graft(std::span<const std::uint8_t> pkt) noexcept {
     std::optional<std::uint32_t> at;
     NodeType type = type_of(SpecialType::nil);
-    Result<std::uint32_t> magic = packet.size() < HDR_SZ ? marshal_error(Errno::ebadmsg) : get_len(packet, 0);
-    Result<Desc> d = magic && *magic == MAGIC ? get_desc(packet, WORD_SZ) : marshal_error(Errno::ebadmsg);
+    Result<std::uint32_t> magic = pkt.size() < HDR_SZ ? marshal_error(Errno::ebadmsg) : get_len(pkt, 0);
+    Result<Desc> d = magic && *magic == MAGIC ? get_desc(pkt, WORD_SZ) : marshal_error(Errno::ebadmsg);
     if (!d) {
         spoil(Errno::ebadmsg);
     } else {
         auto [payload_sz, desc_type] = *d;
         type = desc_type;
-        if (payload_sz > packet.size() - HDR_SZ) {
+        if (payload_sz > pkt.size() - HDR_SZ) {
             spoil(Errno::ebadmsg);
         } else if (payload_sz != 0) {
             Result<std::uint32_t> unit = align_sz(type);
             if (!unit || payload_sz % *unit != 0) {
                 spoil(Errno::ebadmsg);
             } else if ((at = reserve(*unit, payload_sz))) {
-                std::memcpy(buf_.data() + *at, packet.data() + HDR_SZ, payload_sz);
+                std::memcpy(buf_.data() + *at, pkt.data() + HDR_SZ, payload_sz);
             }
         }
     }
@@ -910,8 +910,8 @@ PacketWriter &PacketWriter::graft(std::span<const std::uint8_t> packet) noexcept
 }
 
 Result<std::uint32_t> PacketWriter::finish() noexcept {
-    ensure(frame_.root && frame_.written == frame_.count, Errno::enotrecoverable, frame_.count, frame_.written);
-    if (error_) return *error_;
+    ensure(frame_.root && frame_.written == frame_.cnt, Errno::enotrecoverable, frame_.cnt, frame_.written);
+    if (err_) return *err_;
     std::uint64_t end = word_up(lim_);
     if (end > buf_.size()) return marshal_error(Errno::eoverflow);
     std::memset(buf_.data() + lim_, 0, end - lim_);
@@ -940,36 +940,20 @@ double now() noexcept {
 
 } // namespace xpute
 
-// cpp/xpute/guest/ipc/directory.cpp
+// cpp/xpute/guest/hostcall.cpp
 
 namespace xpute {
 
-void write_directory(Memory mem, std::uint32_t at, std::uint32_t words, std::span<const Entry> entries) noexcept {
-    ensure(directory_words(static_cast<std::uint32_t>(entries.size())) <= words, Errno::enospc, entries.size());
-    for (std::size_t i = 0; i < entries.size(); i++) {
-        for (std::size_t j = 0; j < i; j++) {
-            ensure(entries[j].key != entries[i].key, Errno::einval, entries[i].key);
-        }
-    }
-    mem.set_word(at, directory::MAGIC);
-    mem.set_word(at + 4, directory::VERSION);
-    mem.set_word(at + 8, static_cast<std::uint32_t>(entries.size()));
-    mem.set_word(at + 12, 0);
-    std::uint32_t off = at + 4 * directory::HEAD;
-    for (const Entry &e : entries) {
-        mem.set_word(off, e.key);
-        mem.set_word(off + 4, e.value);
-        off += 8;
-    }
+namespace {
+Hostcall installed_hostcall = nullptr;
 }
 
-std::array<Entry, 3> quantum_entries(const QuantumPolicy &q) noexcept {
-    auto scaled = [](double v) { return saturate_as<std::uint32_t>(round(v * directory::QUANTUM_SCALE)); };
-    return {{
-        {directory::key::MARGIN_SHARE, scaled(q.margin_share)},
-        {directory::key::BATCH_FRAMES, scaled(q.batch_frames)},
-        {directory::key::SETTLE_MS, scaled(q.settle_ms)},
-    }};
+void set_hostcall(Hostcall hostcall) noexcept {
+    installed_hostcall = hostcall;
+}
+
+std::int32_t hostcall(std::uint32_t at) noexcept {
+    return installed_hostcall != nullptr ? installed_hostcall(at) : static_cast<std::int32_t>(Errno::enosys);
 }
 
 } // namespace xpute
@@ -982,9 +966,9 @@ static bool power_of_two(std::uint32_t n) noexcept {
     return n != 0 && (n & (n - 1)) == 0;
 }
 
-// Payloads are padded to 8 bytes.
+// Payloads are padded to XTP's word (`WORD_SZ`).
 static constexpr std::uint64_t padded(std::uint64_t n) noexcept {
-    return (n + 7) / 8 * 8;
+    return (n + xtp::WORD_SZ - 1) / xtp::WORD_SZ * xtp::WORD_SZ;
 }
 
 Ring::Ring(Memory mem, std::uint32_t at) noexcept
@@ -994,7 +978,7 @@ Ring::Ring(Memory mem, std::uint32_t at) noexcept
 
 Ring Ring::init(Memory mem, std::uint32_t at, std::uint32_t cap, std::uint32_t slot_base, std::uint32_t slot_bytes) noexcept {
     ensure(power_of_two(cap), Errno::einval, cap);
-    ensure(power_of_two(slot_bytes) && slot_bytes % 8 == 0, Errno::einval, slot_bytes);
+    ensure(power_of_two(slot_bytes) && slot_bytes % xtp::WORD_SZ == 0, Errno::einval, slot_bytes);
     std::memset(mem.at(at), 0, ring_bytes(cap));
     mem.set_word(at + 4 * ring::CAP, cap);
     mem.set_word(at + 4 * ring::SLOT_BYTES, slot_bytes);
@@ -1002,36 +986,36 @@ Ring Ring::init(Memory mem, std::uint32_t at, std::uint32_t cap, std::uint32_t s
     return Ring(mem, at);
 }
 
-std::uint32_t Ring::slot_at(std::uint32_t position) const noexcept {
-    return slot_base_ + (position & (cap_ - 1)) * slot_bytes_;
+std::uint32_t Ring::slot_at(std::uint32_t pos) const noexcept {
+    return slot_base_ + (pos & (cap_ - 1)) * slot_bytes_;
 }
 
 void Ring::pad(std::uint32_t slot, std::uint32_t n) const noexcept {
     std::memset(mem_.at(slot + n), 0, padded(n) - n);
 }
 
-void Ring::publish(std::uint32_t tag, std::uint32_t cmd, std::uint32_t flags, std::int32_t result, std::uint32_t packet_at) const noexcept {
+void Ring::publish(std::uint32_t tag, std::uint32_t cmd, std::uint32_t flags, std::int32_t result, std::uint32_t pkt_at) const noexcept {
     std::uint32_t t = tail();
     std::uint32_t f = at_ + 4 * entry_at(t);
     mem_.set_word(f + 4 * frame::TAG, tag);
     mem_.set_word(f + 4 * frame::CMD, frame::cmd_word(cmd, flags));
     mem_.set_word(f + 4 * frame::RESULT, static_cast<std::uint32_t>(result));
-    mem_.set_word(f + 4 * frame::PACKET, packet_at);
+    mem_.set_word(f + 4 * frame::PKT, pkt_at);
     // The frame is whole before the tail says so.
     set_header(ring::TAIL, t + 1);
 }
 
-Errno Ring::push(std::uint32_t tag, std::uint32_t cmd, std::uint32_t flags, std::int32_t result, std::optional<std::span<const std::uint8_t>> packet) const noexcept {
+Errno Ring::push(std::uint32_t tag, std::uint32_t cmd, std::uint32_t flags, std::int32_t result, std::optional<std::span<const std::uint8_t>> pkt) const noexcept {
     if (len() >= cap()) return Errno::eagain;
-    std::uint32_t packet_at = 0;
-    if (packet) {
-        if (padded(packet->size()) > slot_bytes()) return Errno::emsgsize;
-        packet_at = slot_at(tail());
-        auto n = static_cast<std::uint32_t>(packet->size());
-        std::memcpy(mem_.at(packet_at), packet->data(), n);
-        pad(packet_at, n);
+    std::uint32_t pkt_at = 0;
+    if (pkt) {
+        if (padded(pkt->size()) > slot_bytes()) return Errno::emsgsize;
+        pkt_at = slot_at(tail());
+        auto n = static_cast<std::uint32_t>(pkt->size());
+        std::memcpy(mem_.at(pkt_at), pkt->data(), n);
+        pad(pkt_at, n);
     }
-    publish(tag, cmd, flags, result, packet_at);
+    publish(tag, cmd, flags, result, pkt_at);
     return Errno::ok;
 }
 
@@ -1044,20 +1028,20 @@ std::optional<Frame> Ring::peek() const noexcept {
         .cmd = frame::cmd_of(word),
         .flags = frame::flags_of(word),
         .result = static_cast<std::int32_t>(mem_.word(f + 4 * frame::RESULT)),
-        .packet_at = mem_.word(f + 4 * frame::PACKET),
+        .pkt_at = mem_.word(f + 4 * frame::PKT),
     };
 }
 
-Result<std::span<const std::uint8_t>> Ring::packet(const Frame &f) const noexcept {
-    if (f.packet_at == 0) return std::span<const std::uint8_t>();
+Result<std::span<const std::uint8_t>> Ring::pkt(const Frame &f) const noexcept {
+    if (f.pkt_at == 0) return std::span<const std::uint8_t>();
     std::uint32_t base = slot_base_, slot = slot_bytes_;
-    if (f.packet_at < base) return marshal_error(Errno::ebadmsg);
-    std::uint64_t off = f.packet_at - base;
-    if (off % slot != 0 || off + 16 > slots_bytes(cap(), slot)) return marshal_error(Errno::ebadmsg);
+    if (f.pkt_at < base) return marshal_error(Errno::ebadmsg);
+    std::uint64_t off = f.pkt_at - base;
+    if (off % slot != 0 || off + xtp::HDR_SZ > slots_bytes(cap(), slot)) return marshal_error(Errno::ebadmsg);
     // The header, then the payload its second word names, to the word.
-    std::uint64_t n = padded(16 + std::uint64_t{mem_.word(f.packet_at + 8)});
+    std::uint64_t n = padded(xtp::HDR_SZ + std::uint64_t{mem_.word(f.pkt_at + xtp::WORD_SZ)});
     if (n > slot) return marshal_error(Errno::ebadmsg);
-    return std::span<const std::uint8_t>(mem_.at(f.packet_at), static_cast<std::size_t>(n));
+    return std::span<const std::uint8_t>(mem_.at(f.pkt_at), static_cast<std::size_t>(n));
 }
 
 void Ring::advance() const noexcept {
@@ -1095,16 +1079,37 @@ std::optional<std::uint32_t> Stream::reserve(std::uint32_t op, std::uint32_t n, 
     return open(op, n, from);
 }
 
+static std::uint32_t byte_words_of(std::optional<std::span<const std::uint8_t>> bytes) noexcept {
+    return static_cast<std::uint32_t>(record_words(0, bytes ? std::optional<std::uint64_t>{bytes->size()} : std::nullopt) - 2);
+}
+
 void Stream::record(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint32_t> tail,
                     std::optional<std::span<const std::uint8_t>> bytes, std::source_location from) noexcept {
-    auto a = static_cast<std::uint32_t>(args.size()), t = static_cast<std::uint32_t>(tail.size());
-    std::uint32_t byte_words = static_cast<std::uint32_t>(record_words(0, bytes ? std::optional<std::uint64_t>{bytes->size()} : std::nullopt) - 2);
-    std::optional<std::uint32_t> w = reserve(op, a + t + byte_words, from);
+    std::optional<std::uint32_t> w = reserve(op, static_cast<std::uint32_t>(args.size() + tail.size()) + byte_words_of(bytes), from);
     if (!w) return;
-    for (std::uint32_t i = 0; i < a; i++) mem_.set_word(*w + WORD * i, args[i]);
-    for (std::uint32_t i = 0; i < t; i++) mem_.set_word(*w + WORD * (a + i), tail[i]);
+    fill(*w, args, tail, bytes);
+}
+
+std::optional<std::uint32_t> Stream::past(std::uint32_t op, std::span<const std::uint32_t> args,
+                                          std::optional<std::span<const std::uint8_t>> bytes) noexcept {
+    std::uint32_t n = static_cast<std::uint32_t>(args.size()) + byte_words_of(bytes);
+    std::uint32_t at = head_ + len_;
+    if (std::uint64_t{at} + 2 + n > words_) return std::nullopt;
+    std::uint32_t off = at_ + WORD * at;
+    mem_.set_word(off, op);
+    mem_.set_word(off + WORD, n);
+    fill(off + 2 * WORD, args, {}, bytes);
+    return off;
+}
+
+void Stream::fill(std::uint32_t w, std::span<const std::uint32_t> args, std::span<const std::uint32_t> tail,
+                  std::optional<std::span<const std::uint8_t>> bytes) noexcept {
+    auto a = static_cast<std::uint32_t>(args.size()), t = static_cast<std::uint32_t>(tail.size());
+    for (std::uint32_t i = 0; i < a; i++) mem_.set_word(w + WORD * i, args[i]);
+    for (std::uint32_t i = 0; i < t; i++) mem_.set_word(w + WORD * (a + i), tail[i]);
     if (bytes) {
-        std::uint32_t k = *w + WORD * (a + t);
+        std::uint32_t byte_words = byte_words_of(bytes);
+        std::uint32_t k = w + WORD * (a + t);
         mem_.set_word(k, static_cast<std::uint32_t>(bytes->size()));
         if (byte_words > 1) mem_.set_word(k + WORD * (byte_words - 1), 0);
         std::memcpy(mem_.at(k + WORD), bytes->data(), bytes->size());
@@ -1152,6 +1157,15 @@ void Sys::call(std::uint32_t op, std::span<const std::uint32_t> args, std::span<
     stream_.record(op, args, {}, bytes);
 }
 
+Result<std::uint32_t> Sys::call_now(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint8_t> bytes) noexcept {
+    ensure((op & sys::op::PROGRAM) != 0, Errno::einval, op);
+    std::optional<std::uint32_t> at = stream_.past(op, args, bytes);
+    if (!at) return make_error(ErrorClass::fault, Errno::enospc);
+    std::int32_t res = xpute::hostcall(*at);
+    if (res < 0) return make_error(ErrorClass::fault, errno_of(res).value_or(Errno::eproto));
+    return static_cast<std::uint32_t>(res);
+}
+
 bool Sys::try_call(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint8_t> bytes, std::uint32_t reserve) noexcept {
     if (!stream_.fits(record_bytes(args.size(), bytes.size()), reserve)) return false;
     call(op, args, bytes);
@@ -1160,10 +1174,38 @@ bool Sys::try_call(std::uint32_t op, std::span<const std::uint32_t> args, std::s
 
 void Sys::abort(Errno errnum, const std::source_location &at, std::uint64_t a, std::uint64_t b) noexcept {
     stream_.publish();
-    const std::array<std::uint32_t, 7> args{static_cast<std::uint32_t>(errnum), at.line(), at.column(), static_cast<std::uint32_t>(a),
-                                            static_cast<std::uint32_t>(a >> 32), static_cast<std::uint32_t>(b), static_cast<std::uint32_t>(b >> 32)};
+    std::array<std::uint32_t, ABORT_ARGS> args{static_cast<std::uint32_t>(errnum), at.line(), at.column()};
+    for (auto [i, v] : {std::pair{sys::abort::A, a}, std::pair{sys::abort::B, b}}) {
+        args[i] = static_cast<std::uint32_t>(v);
+        args[i + 1] = static_cast<std::uint32_t>(v >> 32);
+    }
     stream_.record(sys::op::ABORT, args, {}, bytes_of(at.file_name()));
     stream_.publish();
+}
+
+} // namespace xpute
+
+// cpp/xpute/guest/ipc/toc.cpp
+
+namespace xpute {
+
+void write_toc(Memory mem, std::uint32_t at, std::uint32_t words, std::span<const Entry> entries) noexcept {
+    ensure(toc_words(static_cast<std::uint32_t>(entries.size())) <= words, Errno::enospc, entries.size());
+    for (std::size_t i = 0; i < entries.size(); i++) {
+        for (std::size_t j = 0; j < i; j++) {
+            ensure(entries[j].key != entries[i].key, Errno::einval, entries[i].key);
+        }
+    }
+    mem.set_word(at, toc::MAGIC);
+    mem.set_word(at + 4, toc::VERSION);
+    mem.set_word(at + 8, static_cast<std::uint32_t>(entries.size()));
+    mem.set_word(at + 12, 0);
+    std::uint32_t off = at + 4 * toc::HEAD;
+    for (const Entry &e : entries) {
+        mem.set_word(off, e.key);
+        mem.set_word(off + 4, e.val);
+        off += 8;
+    }
 }
 
 } // namespace xpute
@@ -1259,7 +1301,7 @@ static bool words(Stream &stream, std::uint32_t op, std::initializer_list<std::u
     return emit(stream, op, [&](auto &s) { detail::words(s, w); });
 }
 
-static std::uint32_t off(Stream &stream, std::span<const std::uint8_t> bytes) noexcept { return stream.memory().off_of(bytes); }
+static std::uint32_t off(Stream &stream, std::span<const std::uint8_t> bytes) noexcept { return stream.mem().off_of(bytes); }
 
 template <class S> static void buffer_write(S &s, Id buffer, std::uint32_t offset, std::span<const std::uint8_t> bytes) noexcept {
     detail::words(s, {buffer, offset});
@@ -1309,7 +1351,7 @@ bool write_texture_at(Stream &stream, const TexelCopyTexture &place, std::array<
 
 bool copy_external_image(Stream &stream, const TexelCopyTexture &to, bool flip_y, bool premultiplied, std::span<const std::uint8_t> image, std::uint32_t &word, std::uint32_t ticket) noexcept {
     word = ticket;
-    std::uint32_t image_at = off(stream, image), word_at = stream.memory().off_of(&word);
+    std::uint32_t image_at = off(stream, image), word_at = stream.mem().off_of(&word);
     return emit(stream, op::COPY_EXTERNAL_IMAGE, [&](auto &s) {
         detail::texture_place(s, to);
         detail::words(s, {flag(flip_y), flag(premultiplied), image_at, static_cast<std::uint32_t>(image.size()), word_at, ticket});
@@ -1404,13 +1446,13 @@ bool dispatch_indirect(Stream &stream, Id pass, Id buffer, std::uint32_t offset)
 
 bool map_async(Stream &stream, Id buffer, std::uint32_t offset, std::span<std::uint8_t> into, std::uint32_t &word, std::uint32_t ticket) noexcept {
     word = ticket;
-    Memory mem = stream.memory();
+    Memory mem = stream.mem();
     return words(stream, op::MAP_ASYNC, {buffer, offset, static_cast<std::uint32_t>(into.size()), mem.off_of(into), mem.off_of(&word), ticket});
 }
 
 bool queue_done(Stream &stream, std::uint32_t &word, std::uint32_t ticket) noexcept {
     word = ticket;
-    return words(stream, op::QUEUE_DONE, {stream.memory().off_of(&word), ticket});
+    return words(stream, op::QUEUE_DONE, {stream.mem().off_of(&word), ticket});
 }
 
 bool configure(Stream &stream, std::uint32_t surface, std::optional<TextureFormat> format, std::uint32_t usage, CanvasAlphaMode alpha) noexcept {
@@ -1420,7 +1462,7 @@ bool configure(Stream &stream, std::uint32_t surface, std::optional<TextureForma
 bool resize(Stream &stream, std::uint32_t surface, std::array<std::uint32_t, 2> size) noexcept { return words(stream, op::RESIZE, {surface, size[0], size[1]}); }
 
 bool device(Stream &stream, std::span<std::uint32_t> into) noexcept {
-    return words(stream, op::DEVICE, {stream.memory().off_of(into), static_cast<std::uint32_t>(into.size())});
+    return words(stream, op::DEVICE, {stream.mem().off_of(into), static_cast<std::uint32_t>(into.size())});
 }
 
 } // namespace xpute::gpu::call
