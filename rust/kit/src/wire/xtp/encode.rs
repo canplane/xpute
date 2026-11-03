@@ -3,6 +3,7 @@
 use crate::status::errno::Errno;
 use crate::status::error::MarshalError;
 
+use super::cursor::{bytes_of, ArrayElem};
 use super::spec::{
     BranchNode, GraftNode, Node, Numeric, ScalarNode, ScalarType, SequenceNode, SequenceType,
     SequenceVal, SpecialType, ALIGN_SZ, ELEM_SZ, GET_DESC, GET_LEN, HDR_SZ, MAGIC, MAX_PKT_SZ,
@@ -399,9 +400,8 @@ impl<'a> PacketWriter<'a> {
     }
 
     /// A string written into the room after its length's word, `write`
-    /// answering how many bytes it wrote, or none where they did not fit:
-    /// the one way a string goes in, whether copied or written in place, so
-    /// the two lay out alike. Followed by a NUL that the length leaves out.
+    /// answering how many bytes it wrote, or none where they did not fit.
+    /// Followed by a NUL that the length leaves out.
     fn str_with(&mut self, write: impl FnOnce(&mut [u8]) -> Option<usize>) -> &mut Self {
         let base = align(self.lim, WORD_SZ) as usize;
         let payload = base + WORD_SZ as usize;
@@ -439,6 +439,11 @@ impl<'a> PacketWriter<'a> {
                 self.entry(None, type_ as u8)
             }
         }
+    }
+
+    /// An array of its elements' type.
+    pub fn array<T: ArrayElem>(&mut self, a: Option<&[T]>) -> &mut Self {
+        self.array_bytes(T::TYPE, a.map(bytes_of))
     }
 
     pub fn u8_array(&mut self, a: Option<&[u8]>) -> &mut Self {
@@ -618,7 +623,7 @@ impl<'a> PacketWriter<'a> {
 
     /// `finish`'s length, or none when the packet was refused: for a room
     /// that fits a packet or not.
-    pub fn fitted(self) -> Option<u32> {
+    pub fn fit_len(self) -> Option<u32> {
         self.finish().ok()
     }
 }

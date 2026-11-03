@@ -150,10 +150,19 @@ fn literal(val: u32, format: &str) -> String {
 }
 
 /// Every command is numbered by a major and a minor that cmd.json names. A
-/// table's numbers are each given out once.
+/// table's numbers are each given out once, and no member takes a global's name.
 fn check_numbers(spec: &Spec, json: &str) -> Result<(), String> {
     for e in &spec.enums {
         let all: Vec<&Member> = members(e).collect();
+        // Each member is a top-level `export const` in TypeScript, which a
+        // bundler that hoists it as `var` turns into the module's own `Object`,
+        // undefined when its `Object.defineProperty` runs.
+        if all.iter().any(|m| m.name == "Object") {
+            return Err(format!(
+                "{json}: {}'s member Object hides the global in its TypeScript module",
+                e.name
+            ));
+        }
         for (i, m) in all.iter().enumerate() {
             if let Some(other) = all[..i].iter().find(|o| o.val == m.val) {
                 return Err(format!(
@@ -179,6 +188,10 @@ fn check_numbers(spec: &Spec, json: &str) -> Result<(), String> {
                 minors.push(e);
             }
         }
+    }
+    // A table that names no majors numbers its commands as it likes.
+    if majors.is_empty() {
+        return Ok(());
     }
     for c in cmds.into_iter().filter(|c| c.val != 0) {
         let major = majors
@@ -206,26 +219,148 @@ struct Target {
     rs_logical: &'static str,
     /// Where the number checks a packet's reader calls are.
     number: &'static str,
-    cpp: (&'static str, &'static str),
+    /// For a program's own table: the guest's `program` module, which each
+    /// packet is read for (`FromPacket`).
+    program: Option<&'static str>,
+    /// For a guest that raises the table's events: the module whose `Event`
+    /// each implements (`xpute_guest::ipc::door`).
+    event: Option<&'static str>,
+    /// For a program's own table: the host's port module, whose `Command` and
+    /// `Event` each command's descriptor is, its fields by place.
+    port: Option<&'static str>,
+    cpp: Option<(&'static str, &'static str)>,
 }
 
-const TARGET: Target = Target {
-    json: "spec/abi/cmd.json",
-    ts: "ts/host/src/abi/cmd.spec.ts",
-    ts_logical: "@xpute/host/abi/cmd.spec.ts",
-    rs: "rust/guest/src/abi/cmd.spec.rs",
-    rs_logical: "xpute-guest/abi/cmd.spec.rs",
-    number: "crate::abi::number",
-    cpp: ("cpp/xpute/guest/abi/cmd.spec.hpp", "xpute::abi"),
-};
+const TARGETS: [Target; 2] = [
+    Target {
+        json: "spec/abi/cmd.json",
+        ts: "ts/host/src/abi/cmd.spec.ts",
+        ts_logical: "@xpute/host/abi/cmd.spec.ts",
+        rs: "rust/guest/src/abi/cmd.spec.rs",
+        rs_logical: "xpute-guest/abi/cmd.spec.rs",
+        number: "crate::abi::number",
+        program: None,
+        event: None,
+        port: None,
+        cpp: Some(("cpp/xpute/guest/abi/cmd.spec.hpp", "xpute::abi")),
+    },
+    // The example's own table, as a program's is generated.
+    Target {
+        json: "spec/example/cmd.json",
+        ts: "ts/example/cmd.spec.ts",
+        ts_logical: "ts/example/cmd.spec.ts",
+        rs: "rust/example/src/cmd.spec.rs",
+        rs_logical: "xpute-example/cmd.spec.rs",
+        number: "xpute_guest::abi::number",
+        program: Some("xpute_guest::program"),
+        event: Some("xpute_guest::ipc::door"),
+        port: Some("@xpute/host/port.ts"),
+        cpp: Some(("cpp/example/cmd.spec.hpp", "example")),
+    },
+];
+
+/// A command table and where its code goes, given by whoever owns it: xpute
+/// reads it and writes nothing of the owner's own.
+pub struct Table<'a> {
+    /// Where the table is read from.
+    pub json: &'a str,
+    /// Where each output is written, its enums' modules in the folder beside
+    /// the TypeScript.
+    pub ts: &'a str,
+    pub rs: &'a str,
+    /// Each as the generated files' headers name it.
+    pub json_shown: &'a str,
+    pub ts_shown: &'a str,
+    pub rs_shown: &'a str,
+    /// Where the number checks a packet's reader calls are.
+    pub number: &'a str,
+    /// For a guest built with `program!`: its `program` module.
+    pub program: Option<&'a str>,
+    /// For a guest that raises the table's events: the module whose `Event`
+    /// each implements (`xpute_guest::ipc::door`).
+    pub event: Option<&'a str>,
+    /// For a host that sends through a port: its port module.
+    pub port: Option<&'a str>,
+}
+
+/// Where a program's C++ guest header is written (`cpp/xpute/guest/program.hpp`).
+pub struct Cpp<'a> {
+    pub path: &'a str,
+    /// As the generated header names it.
+    pub shown: &'a str,
+    /// The namespace its enums and structs are declared in.
+    pub namespace: &'a str,
+}
+
+/// `table`'s TypeScript and Rust.
+pub fn table_outputs(table: &Table) -> Result<Vec<Output>, String> {
+    outputs_of(table, None)
+}
+
+/// `table`'s TypeScript and Rust, and its C++ where `cpp_out` says.
+fn outputs_of(table: &Table, cpp_out: Option<&Cpp>) -> Result<Vec<Output>, String> {
+    let keep = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+    let spec: Spec = read_as(table.json)?;
+    check_numbers(&spec, table.json_shown)?;
+    let t = Target {
+        json: keep(table.json_shown),
+        ts: keep(table.ts),
+        ts_logical: keep(table.ts_shown),
+        rs: keep(table.rs),
+        rs_logical: keep(table.rs_shown),
+        number: keep(table.number),
+        program: table.program.map(keep),
+        event: table.event.map(keep),
+        port: table.port.map(keep),
+        cpp: None,
+    };
+    let mut out = ts::emit(&spec, &t)?;
+    out.push(Output::new(t.rs, rs::emit(&spec, &t)?));
+    if let Some(c) = cpp_out {
+        out.push(Output::new(
+            c.path,
+            cpp::emit(&spec, &t, c.shown, c.namespace)?,
+        ));
+    }
+    Ok(out)
+}
+
+/// A program's own table at `json`, its TypeScript at `ts`, its Rust at `rs`
+/// and, where `cpp_out` says, its C++, for a guest built with
+/// `xpute_guest::program!` or `XPUTE_PROGRAM` and a host that sends through
+/// `@xpute/host`'s port; `shown` is each as the headers name it.
+pub fn program_outputs(
+    json: &str,
+    ts: &str,
+    rs: &str,
+    shown: [&str; 3],
+    cpp_out: Option<&Cpp>,
+) -> Result<Vec<Output>, String> {
+    let table = Table {
+        json,
+        ts,
+        rs,
+        json_shown: shown[0],
+        ts_shown: shown[1],
+        rs_shown: shown[2],
+        number: "xpute_guest::abi::number",
+        program: Some("xpute_guest::program"),
+        event: Some("xpute_guest::ipc::door"),
+        port: Some("@xpute/host/port.ts"),
+    };
+    outputs_of(&table, cpp_out)
+}
 
 pub fn outputs() -> Result<Vec<Output>, String> {
-    let t = &TARGET;
-    let spec: Spec = read_as(t.json)?;
-    check_numbers(&spec, t.json)?;
-    let mut out = ts::emit(&spec, t)?;
-    out.push(Output::new(t.rs, rs::emit(&spec, t)?));
-    let (path, namespace) = t.cpp;
-    out.push(Output::new(path, cpp::emit(&spec, t, path, namespace)?));
+    let mut out = Vec::new();
+    for t in &TARGETS {
+        let spec: Spec = read_as(t.json)?;
+        check_numbers(&spec, t.json)?;
+        out.extend(ts::emit(&spec, t)?);
+        out.push(Output::new(t.rs, rs::emit(&spec, t)?));
+        if let Some((path, namespace)) = t.cpp {
+            out.push(Output::new(path, cpp::emit(&spec, t, path, namespace)?));
+        }
+    }
     Ok(out)
 }

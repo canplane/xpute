@@ -222,24 +222,29 @@ export class TlvWriter {
 
   write_all(vals: TlvValue[]): this {
     for (const v of vals) {
-      if (typeof v === "boolean") {
-        this.bool(v);
-      } else if (typeof v === "number") {
-        if (Number.isSafeInteger(v)) {
-          if (v >= I32_MIN && v <= I32_MAX) this.i32(v);
-          else this.i64(BigInt(v));
-        } else {
-          this.f64(v);
-        }
-      } else if (typeof v === "bigint") {
-        if (v < I64_MIN || v > I64_MAX) {
-          throw new MarshalError(Errno.EBADMSG);
-        }
-        this.i64(v);
-      } else if (typeof v === "string") {
-        this.str(v);
-      } else {
-        this.bytes(v);
+      switch (typeof v) {
+        case "boolean":
+          this.bool(v);
+          break;
+        case "number":
+          if (Number.isSafeInteger(v)) {
+            if (v >= I32_MIN && v <= I32_MAX) this.i32(v);
+            else this.i64(BigInt(v));
+          } else {
+            this.f64(v);
+          }
+          break;
+        case "bigint":
+          if (v < I64_MIN || v > I64_MAX) {
+            throw new MarshalError(Errno.EBADMSG);
+          }
+          this.i64(v);
+          break;
+        case "string":
+          this.str(v);
+          break;
+        default:
+          this.bytes(v);
       }
     }
     return this;
@@ -253,7 +258,7 @@ export type TlvEnd = "closed" | "unclosed";
 export class TlvReader implements Iterable<TlvValue> {
   private _stream: Stream;
   private _end: u32;
-  private _ended: TlvEnd | null = null;
+  private _ending: TlvEnd | null = null;
 
   private readonly _buf: Bytes;
 
@@ -266,7 +271,7 @@ export class TlvReader implements Iterable<TlvValue> {
   /** How the sequence ended, once reading has reached its end: null while
    * values remain, and after a fault. */
   end(): TlvEnd | null {
-    return this._ended;
+    return this._ending;
   }
 
   read_all(): TlvValue[] {
@@ -276,14 +281,14 @@ export class TlvReader implements Iterable<TlvValue> {
   }
 
   *[Symbol.iterator](): Iterator<TlvValue> {
-    while (this._ended === null) {
+    while (this._ending === null) {
       if (this._stream.off >= this._end) {
-        this._ended = "unclosed";
+        this._ending = "unclosed";
         break;
       }
       const tag = get_tag(this._stream);
       if (tag === Tag.END) {
-        this._ended = "closed";
+        this._ending = "closed";
         break;
       }
 

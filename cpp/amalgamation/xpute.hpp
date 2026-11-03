@@ -147,7 +147,7 @@ template <Range R> class BuddyMalloc {
     BuddyMalloc &operator=(const BuddyMalloc &) = delete;
 
     // The high-water mark, not what is live.
-    std::size_t used() const noexcept { return max_ptr_ - base_ptr_; }
+    std::size_t peak() const noexcept { return max_ptr_ - base_ptr_; }
     std::size_t live() const noexcept { return live_; }
     std::size_t range_bytes() const noexcept { return end_ptr_ - base_ptr_; }
     // A refused request can only be served once this has moved.
@@ -428,7 +428,7 @@ template <Range R> class SlabMalloc {
     const BuddyMalloc<R> &pages() const noexcept { return buddy_; }
     const std::uintptr_t *stat() const noexcept { return buddy_.stat(); }
 
-    std::size_t used() const noexcept { return buddy_.used(); }
+    std::size_t peak() const noexcept { return buddy_.peak(); }
     std::size_t live() const noexcept { return buddy_.live(); }
     std::size_t range_bytes() const noexcept { return buddy_.range_bytes(); }
     std::uint32_t releases() const noexcept { return buddy_.releases(); }
@@ -1316,8 +1316,7 @@ template <class Vec, bool MIN> class Heap {
 
     void build() noexcept { build_of(a_); }
 
-    // The new element's place is opened by moving parents down, so one write
-    // lands it rather than a swap per level.
+    // The new element's place is opened by moving parents down.
     void push(E e) {
         std::size_t i = a_.size();
         a_.push_back(e);
@@ -1374,8 +1373,7 @@ template <class K, class T> void heapsort(std::span<Element<K, T>> a) noexcept {
 // cpp/xpute/kit/collection/list.hpp
 
 // A list of at most `N`, held inline: it never grows, and a push past `N` is a
-// bug (ENOSPC). For what a program bounds by a constant, where a vector would
-// grow to that bound anyway. Its first `len` slots are live.
+// bug (ENOSPC). Its first `len` slots are live.
 
 #include <memory>
 
@@ -1419,7 +1417,7 @@ template <class T, std::size_t N> class List {
     const T *begin() const noexcept { return slot(0); }
     const T *end() const noexcept { return slot(len_); }
 
-    // The value at `at`, those after it moved down one: the order kept.
+    // The value at `at`, those after it moved down one: the order live.
     T remove(std::size_t at) noexcept {
         ensure(at < len_, Errno::einval, at);
         T val = std::move(*slot(at));
@@ -1429,20 +1427,20 @@ template <class T, std::size_t N> class List {
         return val;
     }
 
-    // Those `keep` refuses dropped, the order of the rest kept, in one pass.
+    // Those `keep` refuses dropped, the order of the rest live, in one pass.
     template <class Keep> void retain(Keep &&keep) noexcept {
-        std::size_t kept = 0;
+        std::size_t live = 0;
         for (std::size_t at = 0; at < len_; at++) {
-            // A slot below `at` and past `kept` is already empty: refused, or
+            // A slot below `at` and past `live` is already empty: refused, or
             // moved down from.
             if (keep(std::as_const(*slot(at)))) {
-                if (kept != at) move_down(at, kept);
-                kept++;
+                if (live != at) move_down(at, live);
+                live++;
             } else {
                 std::destroy_at(slot(at));
             }
         }
-        len_ = kept;
+        len_ = live;
     }
 
     void clear() noexcept {
@@ -1541,8 +1539,6 @@ class SplitMix64 {
         z = (z ^ z >> 30) * 0xbf58476d1ce4e5b9u;
         z = (z ^ z >> 27) * 0x94d049bb133111ebu;
         z ^= z >> 31;
-        // The high half, as java.util.random's nextInt and rand_xoshiro's
-        // SplitMix64 take a u32 from a 64-bit word.
         return static_cast<std::uint32_t>(z >> 32);
     }
 
@@ -1556,8 +1552,7 @@ class SplitMix64 {
 
 // Reproducible seeds and streams; not for anything that must resist prediction.
 // Two families, a file each: 64-bit (splitmix64, rng.64.hpp) and 32-bit
-// (Murmur3's finalizer, rng.32.hpp), the latter gpu-portable, since WebGPU has
-// no 64-bit integer.
+// (Murmur3's finalizer, rng.32.hpp), the latter gpu-portable.
 
 namespace xpute {
 
@@ -2986,7 +2981,7 @@ template <class T, std::size_t N> class Table {
         // Never 0, so no handle is 0.
         auto generation = static_cast<std::uint16_t>(s.generation + 1);
         s.generation = generation == 0 ? 1 : generation;
-        s.made = epoch_ + 1;
+        s.epoch = epoch_ + 1;
         s.val = std::move(val);
         cnt_++;
         return handle_of(slot, s.generation);
@@ -2994,7 +2989,7 @@ template <class T, std::size_t N> class Table {
 
     bool live(std::uint32_t handle) const noexcept {
         std::uint32_t slot = handle_slot(handle);
-        return slot != 0 && slot < N && slots_[slot].made != 0 && slots_[slot].generation == handle >> SLOT_BITS;
+        return slot != 0 && slot < N && slots_[slot].epoch != 0 && slots_[slot].generation == handle >> SLOT_BITS;
     }
 
     T *get(std::uint32_t handle) noexcept { return live(handle) ? &slots_[handle_slot(handle)].val : nullptr; }
@@ -3004,7 +2999,7 @@ template <class T, std::size_t N> class Table {
         if (!live(handle)) return std::nullopt;
         std::uint32_t slot = handle_slot(handle);
         Slot &s = slots_[slot];
-        s.made = 0;
+        s.epoch = 0;
         s.next = free_;
         free_ = slot;
         cnt_--;
@@ -3020,7 +3015,7 @@ template <class T, std::size_t N> class Table {
     template <class F> void rollback(F &&gone) noexcept {
         for (std::uint32_t slot = 1; slot <= top_; slot++) {
             std::uint32_t handle = handle_of(slot, slots_[slot].generation);
-            if (slots_[slot].made != epoch_ + 1) continue;
+            if (slots_[slot].epoch != epoch_ + 1) continue;
             if (std::optional<T> val = remove(handle)) gone(handle, std::move(*val));
         }
     }
@@ -3039,7 +3034,7 @@ template <class T, std::size_t N> class Table {
         std::uint16_t generation = 0;
         // One past the epoch the slot was taken in; 0 while free. 64 bits, so
         // no count of epochs a program lives through brings a stale one round.
-        std::uint64_t made = 0;
+        std::uint64_t epoch = 0;
         // A free slot's next free slot; 0, never handed out, ends the list.
         std::uint32_t next = 0;
         T val{};
@@ -3187,7 +3182,7 @@ constexpr std::uint32_t port_of(std::uint32_t tag) noexcept {
 }
 
 // The tag of a frame for `port`, its id or subject `id`.
-constexpr std::uint32_t tagged(std::uint32_t port, std::uint32_t id) noexcept {
+constexpr std::uint32_t tag_of(std::uint32_t port, std::uint32_t id) noexcept {
     return port << PORT_SHIFT | id;
 }
 
@@ -3386,14 +3381,23 @@ class Ring {
 // cpp/xpute/guest/ipc/door.hpp
 
 // The guest's end of its two rings. A command is started only while the
-// completion ring has room for all it may leave (`reserve`), as a credit-based
-// link bounds a sender, so one started never finds the ring full; what is not
-// started waits in order. Overrunning the ring is a sizing fault.
+// completion ring has room for all it may leave (`reserve`), so one started
+// never finds the ring full; what is not started waits in order. Overrunning
+// the ring is a sizing fault.
 
 namespace xpute {
 
+// An event a table generates (xpute-tool `spec/cmd`): its number, the
+// children it is written as, and its writer.
+template <class E>
+concept Event = requires(const E &e, xtp::PacketWriter &w) {
+    { E::NUMBER } -> std::convertible_to<std::uint32_t>;
+    { E::FIELDS } -> std::convertible_to<std::uint32_t>;
+    e.write(w);
+};
+
 // Errno::enosys for a command the guest does not number.
-struct Applied {
+struct Outcome {
     Errno err = Errno::ok;
     std::int32_t val = 0;
 };
@@ -3431,12 +3435,17 @@ class Door {
 
     // An event for `port`.
     template <class Fill> void raise(std::uint32_t port, std::uint32_t cmd, std::uint32_t cnt, Fill &&fill) const noexcept {
-        post_in_place(frame::tagged(port, 0), cmd, 0, 0, [&](std::span<std::uint8_t> out) -> std::optional<std::uint32_t> {
+        post_in_place(frame::tag_of(port, 0), cmd, 0, 0, [&](std::span<std::uint8_t> out) -> std::optional<std::uint32_t> {
             xtp::PacketWriter w(out);
             w.branch(cnt, fill);
             Result<std::uint32_t> n = w.finish();
             return n ? std::optional(*n) : std::nullopt;
         });
+    }
+
+    // `event` for `port`.
+    template <Event E> void raise_to(std::uint32_t port, const E &event) const noexcept {
+        raise(port, E::NUMBER, E::FIELDS, [&event](xtp::PacketWriter &w) { event.write(w); });
     }
 
     // Applies waiting commands in order while there is room for what one more may
@@ -3452,7 +3461,7 @@ class Door {
             std::optional<Frame> f = sq_.peek();
             if (!f) break;
             Result<std::span<const std::uint8_t>> pkt = sq_.pkt(*f);
-            Applied a = pkt ? applied(*f, *pkt, opened, apply) : Applied{.err = pkt.error().errnum};
+            Outcome a = pkt ? apply_frame(*f, *pkt, opened, apply) : Outcome{.err = pkt.error().errnum};
             sq_.advance();
             if (a.err != Errno::ok) {
                 post(f->tag, f->cmd, frame::RES, static_cast<std::int32_t>(a.err));
@@ -3469,7 +3478,7 @@ class Door {
   private:
     bool has_room() const noexcept { return cq_.len() + reserve_ <= cq_.cap(); }
 
-    template <class Opened, class Apply> static Applied applied(const Frame &f, std::span<const std::uint8_t> pkt, Opened &opened, Apply &apply) noexcept {
+    template <class Opened, class Apply> static Outcome apply_frame(const Frame &f, std::span<const std::uint8_t> pkt, Opened &opened, Apply &apply) noexcept {
         if (frame::port_of(f.tag) != frame::HOST) return apply(f.cmd, pkt);
         if (f.cmd == static_cast<std::uint32_t>(abi::Command::NOP)) {
             if (pkt.empty()) return {};
@@ -3694,6 +3703,13 @@ namespace xpute {
 
 using Fd = std::uint32_t;
 
+// A host's answer as one value: a count, or the errno it refused with. A code
+// no errno names is the host breaking the protocol, EPROTO.
+inline Result<std::uint32_t> answer_of(std::int32_t res) noexcept {
+    if (res < 0) return make_error(ErrorClass::fault, errno_of(res).value_or(Errno::eproto));
+    return static_cast<std::uint32_t>(res);
+}
+
 // Each call's arguments, which its record takes as an array of this length.
 inline constexpr std::size_t OPENAT_ARGS = sys::args::OPENAT;
 inline constexpr std::size_t READ_ARGS = sys::args::READ;
@@ -3754,9 +3770,82 @@ class Sys {
 // cpp/xpute/guest/ipc/file.hpp
 
 // A guest's open files. A descriptor is a table handle, so an answer to one
-// already closed reaches no one, which is the whole of a stale answer's handling.
+// already closed reaches no one.
+
+#include <new>
 
 namespace xpute {
+
+// What an open came to, read once from the host's answer.
+struct Opened {
+    enum class Kind : std::uint8_t {
+        // The file's size is `bytes`; the descriptor is its owner's to read and close.
+        bytes,
+        // No such file; the descriptor is closed (`Files::complete_open`).
+        absent,
+        // Every other failure, `errnum`, and the number the host refused with,
+        // `detail`; the descriptor is closed.
+        failed,
+    };
+
+    Kind kind;
+    std::uint32_t bytes = 0;
+    Errno errnum = Errno::ok;
+    std::uint32_t detail = 0;
+
+    bool operator==(const Opened &) const = default;
+
+    static Opened of(const abi::SysOpened &opened) noexcept {
+        Result<std::uint32_t> n = answer_of(opened.res);
+        if (n) return {.kind = Kind::bytes, .bytes = *n};
+        if (n.error().errnum == Errno::enoent) return {.kind = Kind::absent};
+        return {.kind = Kind::failed, .errnum = n.error().errnum, .detail = opened.detail};
+    }
+};
+
+// Bytes of the heap, given back by their size: what a read fills.
+class Bytes {
+  public:
+    Bytes() noexcept = default;
+    Bytes(Bytes &&o) noexcept : at_(std::exchange(o.at_, nullptr)), cnt_(std::exchange(o.cnt_, 0)) {}
+    Bytes &operator=(Bytes &&o) noexcept {
+        if (this != &o) {
+            release();
+            at_ = std::exchange(o.at_, nullptr);
+            cnt_ = std::exchange(o.cnt_, 0);
+        }
+        return *this;
+    }
+    Bytes(const Bytes &) = delete;
+    Bytes &operator=(const Bytes &) = delete;
+    ~Bytes() { release(); }
+
+    // None where the heap has no room.
+    static std::optional<Bytes> make(std::uint32_t cnt) noexcept {
+        Bytes b;
+        if (cnt == 0) return b;
+        b.at_ = static_cast<std::uint8_t *>(::operator new(cnt, std::nothrow));
+        if (b.at_ == nullptr) return std::nullopt;
+        b.cnt_ = cnt;
+        return b;
+    }
+
+    std::uint8_t *data() noexcept { return at_; }
+    const std::uint8_t *data() const noexcept { return at_; }
+    std::size_t size() const noexcept { return cnt_; }
+    std::span<std::uint8_t> span() noexcept { return {at_, cnt_}; }
+    std::span<const std::uint8_t> span() const noexcept { return {at_, cnt_}; }
+
+  private:
+    void release() noexcept {
+        if (at_ != nullptr) ::operator delete(at_, cnt_);
+        at_ = nullptr;
+        cnt_ = 0;
+    }
+
+    std::uint8_t *at_ = nullptr;
+    std::size_t cnt_ = 0;
+};
 
 // At most `N - 1` open at once; one more is a bug.
 template <class O, std::size_t N> class Files {
@@ -3764,6 +3853,13 @@ template <class O, std::size_t N> class Files {
     Fd open(Sys &sys, std::uint32_t root, std::string_view path, O owner) {
         Fd fd = take(std::move(owner));
         sys.openat(fd, root, sys::flag::O_RDONLY, path);
+        return fd;
+    }
+
+    // `open`, or none where `N - 1` are open already.
+    std::optional<Fd> try_open(Sys &sys, std::uint32_t root, std::string_view path, O owner) {
+        std::optional<Fd> fd = held_.insert(std::move(owner));
+        if (fd) sys.openat(*fd, root, sys::flag::O_RDONLY, path);
         return fd;
     }
 
@@ -3781,15 +3877,25 @@ template <class O, std::size_t N> class Files {
         close(sys, fd);
     }
 
-    // None for a descriptor already closed.
     // The owner of the open `opened` completes, or none where its descriptor was
     // closed since; a descriptor whose open failed is closed here.
-    std::optional<O> opened(Sys &sys, const abi::SysOpened &opened) {
+    std::optional<O> complete_open(Sys &sys, const abi::SysOpened &opened) {
         const O *held = held_.get(opened.fd);
         if (held == nullptr) return std::nullopt;
         O owner = *held;
         if (opened.res < 0) close(sys, opened.fd);
         return owner;
+    }
+
+    // The file an open answered with `bytes`, read whole into the heap and
+    // closed: its bytes, filled from the next turn on and kept until then, or
+    // ENOMEM where the heap has no room for them, nothing read.
+    Result<Bytes> read_whole(Sys &sys, Fd fd, std::uint32_t bytes) {
+        std::optional<Bytes> held = Bytes::make(bytes);
+        if (held) sys.read(fd, held->span());
+        close(sys, fd);
+        if (!held) return make_error(ErrorClass::fault, Errno::enomem);
+        return std::move(*held);
     }
 
     const O *owner(Fd fd) const noexcept { return held_.get(fd); }
@@ -3876,8 +3982,7 @@ constexpr std::uint32_t toc_words(std::uint32_t entries) noexcept {
     return toc::HEAD + 2 * entries;
 }
 
-// The toc at `at`, `words` long. A key may appear once, so no two
-// readers can pick different values.
+// The toc at `at`, `words` long.
 void write_toc(Memory mem, std::uint32_t at, std::uint32_t words, std::span<const Entry> entries) noexcept;
 
 } // namespace xpute
@@ -3891,8 +3996,7 @@ void write_toc(Memory mem, std::uint32_t at, std::uint32_t words, std::span<cons
 
 namespace xpute {
 
-// An offset and a size rather than a pointer, because a host names a block by
-// its offset, and giving a block back needs the size.
+// An offset and a size: freeing needs both.
 struct Block {
     std::uint32_t at;
     std::uint32_t bytes;
@@ -3913,7 +4017,7 @@ void set_heap(Allocator heap) noexcept;
 struct HeapStat {
     std::size_t range = 0;
     // A high-water mark, not a holding.
-    std::size_t used = 0;
+    std::size_t peak = 0;
     std::size_t live = 0;
     std::size_t run = 0;
     std::size_t slot = 0;
@@ -3934,7 +4038,7 @@ struct HeapStat {
 template <Range R> HeapStat heap_stat(const SlabMalloc<R> &a) noexcept {
     return HeapStat{
         .range = a.range_bytes(),
-        .used = a.used(),
+        .peak = a.peak(),
         .live = a.live(),
         .run = a.run_live(),
         .slot = a.slot_live(),
@@ -3970,11 +4074,16 @@ inline void free(Block block) noexcept {
 namespace xpute {
 
 // The unit sections align to and the least block a guest's heap hands out: a
-// 32-bit machine's page, borrowed, not the host's.
+// 32-bit machine's page.
 inline constexpr std::uint32_t PAGE_BYTES = 4096;
 
 constexpr std::uint32_t align_up(std::uint32_t n, std::uint32_t unit) noexcept {
     return (n + unit - 1) / unit * unit;
+}
+
+// `n` rounded up to a whole page, where whatever follows it begins.
+constexpr std::uint32_t page_up(std::uint32_t n) noexcept {
+    return align_up(n, PAGE_BYTES);
 }
 
 // Includes the last one's own rounding, so this is where whatever follows starts.
@@ -4013,15 +4122,45 @@ struct Section {
 
 } // namespace xpute
 
-// cpp/xpute/guest/sched/wake.hpp
+// cpp/xpute/guest/mem/range.hpp
 
-// What a falling edge answers besides a delay. When the next turn runs, and
-// how much it gets, is the host's scheduling policy's.
+// A range of the guest's own ahead of its heap: placed once at boot, never
+// freed, sized at compile time. Whoever lays the memory out hands each owner
+// its range once (`OwnedRange`); a range is read only through `arr` and
+// `Section::at`, which check its end.
 
 namespace xpute {
 
-// The guest waits on something only the host can bring, an input or an arrival.
-inline constexpr double NO_WAKE = -1.0;
+// One owner's range, handed in once at boot; asking before is a bug.
+class OwnedRange {
+  public:
+    void set(Section s) noexcept { held_ = s; }
+
+    Section get() const noexcept { return or_bug(held_, Errno::enotrecoverable); }
+
+  private:
+    std::optional<Section> held_;
+};
+
+// A cache line, which an array is laid on.
+inline constexpr std::size_t LINE_BYTES = 64;
+
+// `cnt` of `size` bytes, rounded up to a whole cache line, as an array is laid.
+constexpr std::uint32_t arr_bytes(std::size_t cnt, std::size_t size) noexcept {
+    return static_cast<std::uint32_t>((cnt * size + LINE_BYTES - 1) / LINE_BYTES * LINE_BYTES);
+}
+
+// `n` of `T` from `off` into `s`, in the guest's own memory. Sizes are fixed at
+// compile time, so out of bounds or misaligned is a bug, not a refusal. The
+// caller holds those bytes alone while it keeps the array, and they are a valid
+// `T` (zeroed, for plain numbers).
+template <class T> std::span<T> arr(Section s, std::uint32_t off, std::size_t n) noexcept {
+    std::uint64_t bytes = std::uint64_t{n} * sizeof(T);
+    ensure(bytes <= UINT32_MAX, Errno::enotrecoverable, bytes);
+    std::uint32_t at = or_bug(s.at(off, static_cast<std::uint32_t>(bytes)), Errno::enotrecoverable);
+    ensure(at % alignof(T) == 0, Errno::enotrecoverable, at);
+    return {reinterpret_cast<T *>(mem::at(at)), n};
+}
 
 } // namespace xpute
 
@@ -4034,7 +4173,6 @@ inline constexpr double NO_WAKE = -1.0;
 
 #include <coroutine>
 #include <cstdlib>
-#include <new>
 
 namespace xpute {
 
@@ -4184,6 +4322,416 @@ bool pending() noexcept;
 
 } // namespace xpute
 
+// cpp/xpute/guest/wasm.hpp
+
+// The guest built as one WebAssembly module: what it reads of the module
+// itself, what it asks of its host (`hostcall`), and its entry, `run`, which the floor names and the program
+// defines. Linked as every module guest is (cpp/Makefile `WASM_LINK`).
+
+#ifdef __wasm__
+
+extern "C" {
+
+// Defined by wasm-ld. The end of .rodata, .data and .bss, where a guest may
+// begin placing its own ranges: not __heap_base, which a C runtime's sbrk
+// starts at, since a guest's heap is where the guest says.
+extern const std::uint8_t __data_end;
+// The top of the stack: -z stack-size past its start, which --stack-first
+// puts at the bottom of the memory.
+extern const std::uint8_t __stack_high;
+
+// Imports of `env`, the module the host instantiates with.
+__attribute__((import_module("env"), import_name("now"))) double xpute_wasm_now(void);
+__attribute__((import_module("env"), import_name("hostcall"))) std::int32_t xpute_wasm_hostcall(std::uint32_t at);
+
+// The entry: a turn of quota_ms, and when the guest wants the next, in ms
+// (0 for the next turn, NO_WAKE in xpute/guest/sched/wake.hpp for none).
+double run(double quota_ms);
+}
+
+namespace xpute::wasm {
+
+// A WebAssembly page, the unit a memory is declared and grown in.
+inline constexpr std::uint64_t WASM_PAGE_BYTES = 1 << 16;
+
+inline std::uint32_t data_end() noexcept {
+    return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(&__data_end));
+}
+
+// Its size, with the stack first.
+inline std::uint32_t stack_high() noexcept {
+    return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(&__stack_high));
+}
+
+// The bytes of memory the host has grown the module to.
+inline std::uint64_t given() noexcept {
+    return std::uint64_t{__builtin_wasm_memory_size(0)} * WASM_PAGE_BYTES;
+}
+
+inline double now() noexcept {
+    return xpute_wasm_now();
+}
+
+// What the record names, the host reads and writes before it returns.
+inline std::int32_t hostcall(std::uint32_t at) noexcept {
+    return xpute_wasm_hostcall(at);
+}
+
+} // namespace xpute::wasm
+
+#endif
+
+// cpp/xpute/guest/program.spec.hpp
+//
+// GENERATED from spec/program.json
+//
+// A program's defaults (xpute-guest program.rs `program!`, cpp/xpute/guest/program.hpp
+// `XPUTE_PROGRAM`): the port its host speaks as, what its range holds and the stack it
+// is linked with, each where the program says nothing else; and the files it may have
+// open. The range's offsets follow from the counts, as each guest end computes them.
+
+namespace xpute::program {
+
+// The port a program's host speaks as unless it says otherwise, and the one a handler's
+// events are raised for: any but the host's, 0 (ipc/frame.json HOST).
+inline constexpr std::uint32_t PORT = 1u;
+
+// Each ring's slots: how many commands can wait, and replies and events be left,
+// between two turns.
+inline constexpr std::uint32_t CAP = 64u;
+
+// A slot's bytes: the most a command's packet, or an event's, may be.
+inline constexpr std::uint32_t SLOT_BYTES = 1024u;
+
+// The hostcalls' stream, in words: what one turn may ask the host to run after it.
+inline constexpr std::uint32_t SYS_WORDS = 4096u;
+
+// The events one command may raise beside its reply.
+inline constexpr std::uint32_t MOST_EVENTS = 4u;
+
+// The stack a module is linked with (`-z stack-size`), placed first.
+inline constexpr std::uint32_t STACK_BYTES = 1048576u;
+
+// The slots of the table its open files are held in, each a read awaited: one fewer may
+// be open at once, and a read past them is refused with EMFILE.
+inline constexpr std::uint32_t MOST_FILES = 64u;
+
+} // namespace xpute::program
+
+// cpp/xpute/guest/program.hpp
+
+// A guest in one declaration (`XPUTE_PROGRAM`): its range laid out past where
+// the linker stopped, the toc's page, the two rings and their slots and the
+// hostcalls' stream, then the heap; its turns run; and each command handed to
+// the function the program names for it, whose result is the reply and whose
+// errno is the failure. Work that waits on the host runs as a task
+// (`Turn::spawn`): a file read whole (`read`) is awaited, and each await ends
+// at a later turn. A bug is published to the host (stop.hpp). What lies under
+// it, ipc/door.hpp, ipc/sys.hpp, ipc/toc.hpp, sched/task.hpp and stop.hpp, a
+// guest that lays its memory out itself uses as it is.
+
+namespace xpute {
+
+// The port a program's host speaks as unless it says otherwise, and the one a
+// handler's events are raised for (@xpute/host port.ts `PROGRAM_PORT`).
+inline constexpr std::uint32_t PROGRAM_PORT = program::PORT;
+
+// What the range holds, by count; the offsets follow from it.
+struct Layout {
+    // Each ring's slots: how many commands can wait, and replies and events be
+    // left, between two turns.
+    std::uint32_t cap;
+    // A slot's bytes: the most a command's packet, or an event's, may be.
+    std::uint32_t slot_bytes;
+    // The hostcalls' stream, in words: what one turn may ask the host to run
+    // after it.
+    std::uint32_t sys_words;
+    // The events one command may raise beside its reply.
+    std::uint32_t most_events;
+
+    static const Layout DEFAULT;
+
+    constexpr std::uint32_t sq_at() const noexcept { return PAGE_BYTES; }
+    constexpr std::uint32_t cq_at() const noexcept { return sq_at() + ring_bytes(cap); }
+    constexpr std::uint32_t sq_slots_at() const noexcept { return cq_at() + ring_bytes(cap); }
+    constexpr std::uint32_t cq_slots_at() const noexcept { return sq_slots_at() + slots_bytes(cap, slot_bytes); }
+    constexpr std::uint32_t sys_at() const noexcept { return cq_slots_at() + slots_bytes(cap, slot_bytes); }
+
+    // Where the heap begins, from the range's start.
+    constexpr std::uint32_t heap_at() const noexcept { return page_up(sys_at() + 4 * sys_words); }
+};
+
+inline constexpr Layout Layout::DEFAULT{
+    .cap = program::CAP,
+    .slot_bytes = program::SLOT_BYTES,
+    .sys_words = program::SYS_WORDS,
+    .most_events = program::MOST_EVENTS,
+};
+
+// The range starts on the page past where the linker stopped.
+constexpr std::uint32_t range_at(std::uint32_t data_end) noexcept {
+    return page_up(data_end);
+}
+
+// Where the heap begins in the memory.
+constexpr std::uint32_t heap_at(const Layout &layout, std::uint32_t data_end) noexcept {
+    return range_at(data_end) + layout.heap_at();
+}
+
+// Lays the range out and writes the toc, before the first turn: the toc's
+// offset, which the module's `boot` answers.
+std::uint32_t boot(const Layout &layout, std::uint32_t data_end) noexcept;
+
+// A command's packet as its handler reads it: a branch of fields, or none.
+class Packet {
+  public:
+    // An empty `pkt` is none: a packet holds its header at least.
+    explicit Packet(std::span<const std::uint8_t> pkt) noexcept : pkt_(pkt) {}
+
+    // Its fields; EBADMSG where the command carried none, or why they do not parse.
+    Result<xtp::BranchCursor> fields() const noexcept;
+
+    // Field `i` as a number, whatever width the sender lowered it as.
+    Result<double> number(std::uint32_t i) const noexcept;
+
+    // Field `i` as text.
+    Result<std::string_view> str(std::uint32_t i) const noexcept;
+
+    // The packet's bytes, for a reader of the program's own.
+    std::optional<std::span<const std::uint8_t>> bytes() const noexcept {
+        return pkt_.empty() ? std::nullopt : std::optional(pkt_);
+    }
+
+  private:
+    std::span<const std::uint8_t> pkt_;
+};
+
+// What a handler takes a command's packet as: the packet itself, or the struct
+// its table generates for it (xpute-tool `spec/cmd`), read by its
+// `from_packet`, EBADMSG where it does not read.
+template <class T>
+concept FromPacket = std::same_as<T, Packet> || requires(Packet pkt) {
+    { T::from_packet(pkt) } -> std::same_as<Result<T>>;
+};
+
+// A turn as a handler sees it: the host to call, and events to raise.
+class Turn {
+  public:
+    Turn(Sys &sys, const Door &door) noexcept : sys_(sys), door_(door) {}
+
+    // A hostcall of the program's own, `code` its number, answered by the host
+    // before it returns from what the host already holds.
+    Result<std::uint32_t> call_now(std::uint32_t code, std::span<const std::uint32_t> args = {}) noexcept {
+        return sys_.call_now(code | sys::op::PROGRAM, args, {});
+    }
+
+    // A hostcall of the program's own, run by the host after the turn: what it
+    // writes back is read on a later turn.
+    void call(std::uint32_t code, std::span<const std::uint32_t> args, std::span<const std::uint8_t> bytes = {}) noexcept {
+        sys_.call(code | sys::op::PROGRAM, args, bytes);
+    }
+
+    // An event for the program's port, heard after the turn.
+    template <Event E> void raise(const E &event) const noexcept { door_.raise_to(PROGRAM_PORT, event); }
+
+    // An event of no table's: `cmd`, and `cnt` fields, which `fill` writes.
+    template <class Fill> void raise_packet(std::uint32_t cmd, std::uint32_t cnt, Fill &&fill) const noexcept {
+        door_.raise(PROGRAM_PORT, cmd, cnt, fill);
+    }
+
+    // Work that waits on the host, first resumed after this turn's commands
+    // and then whenever what it awaits is ready; EAGAIN where the heap or the
+    // executor has no room for it.
+    Result<void> spawn(Task<> work) const noexcept;
+
+  private:
+    Sys &sys_;
+    const Door &door_;
+};
+
+namespace program_detail {
+
+struct Program;
+
+// The booted program's door, none before `boot`.
+const Door *door() noexcept;
+
+} // namespace program_detail
+
+// An event for the program's port from a task, heard after the turn.
+template <Event E> void raise(const E &event) noexcept {
+    if (const Door *door = program_detail::door()) door->raise_to(PROGRAM_PORT, event);
+}
+
+// A read awaited (`read`), holding its own copy of the path, so it may be made
+// in a handler and handed to a task; moved only before it is awaited, and
+// destroyed before it is ready, its open is cancelled.
+class [[nodiscard]] Read {
+  public:
+    Read(std::uint32_t root, std::string_view path) noexcept;
+    Read(Read &&o) noexcept;
+    Read(const Read &) = delete;
+    Read &operator=(const Read &) = delete;
+    ~Read();
+
+    bool await_ready() const noexcept { return got_ == Got::done; }
+    template <class P> bool await_suspend(std::coroutine_handle<P> h) noexcept { return open(waker_of(h)); }
+    Result<Bytes> await_resume() noexcept;
+
+  private:
+    friend struct program_detail::Program;
+
+    enum class Got : std::uint8_t {
+        idle,
+        opening,
+        // Filled by the host after the turn `asked_` ends.
+        reading,
+        done,
+    };
+
+    // False where it is done at once, without waiting.
+    bool open(Waker waker) noexcept;
+    void ready(Errno err) noexcept;
+
+    std::uint32_t root_;
+    Bytes path_;
+    Fd fd_ = 0;
+    Got got_ = Got::idle;
+    std::uint32_t asked_ = 0;
+    Errno err_ = Errno::ok;
+    Bytes bytes_;
+    Waker waker_;
+};
+
+// The file at `path` below `root`, whole: its bytes, or the errno its open was
+// refused with (ENOENT where there is none; what a root means is the host's
+// `Fs`), EMFILE where as many are open as a program may have, ENOMEM where the
+// heap has no room for it or its path. Opened on the turn it is first awaited,
+// read on the turn its open is answered, and ready on the turn after.
+inline Read read(std::uint32_t root, std::string_view path) noexcept {
+    return Read(root, path);
+}
+
+// What a command is handed to: its reply, or its errno.
+using Handler = Result<std::int32_t> (*)(Turn &, Packet);
+
+// A command's number and its handler (`on`).
+struct On {
+    std::uint32_t cmd;
+    Handler handler;
+};
+
+namespace program_detail {
+
+template <class A> A arg_of(Result<std::int32_t> (*)(Turn &, A));
+template <class A> A arg_of(Result<std::int32_t> (*)(Turn &, A) noexcept);
+
+template <auto F> Result<std::int32_t> handle(Turn &cx, Packet pkt) {
+    using A = std::remove_cvref_t<decltype(arg_of(F))>;
+    static_assert(FromPacket<A>, "a handler takes its packet as Packet or as the struct its table generates");
+    if constexpr (std::same_as<A, Packet>) {
+        return F(cx, pkt);
+    } else {
+        Result<A> a = A::from_packet(pkt);
+        if (!a) return a.error();
+        return F(cx, std::move(*a));
+    }
+}
+
+} // namespace program_detail
+
+// `F` for the command `Cmd`: F takes the turn and the packet, as `Packet` or as
+// the struct its table generates (`FromPacket`), and answers its reply or its
+// errno.
+template <auto Cmd, auto F> inline constexpr On on{static_cast<std::uint32_t>(Cmd), &program_detail::handle<F>};
+
+// A turn: what waits, each command to its handler in order, ENOSYS for one
+// with none, then the tasks; the next turn asked for while any is left.
+double turn(std::span<const On> handlers) noexcept;
+
+#ifdef __wasm__
+
+// A module program's heap: from past its range to the end of the memory
+// given, which never grows.
+template <Layout L> struct ProgramHeap {
+    static constexpr std::size_t MIN_LOG2 = std::countr_zero(PAGE_BYTES);
+    // The largest power of two short of the whole address space: the tree grows
+    // only as requests need, and `end` says what is real.
+    static constexpr std::size_t MAX_LOG2 = ADDR_BITS - 1;
+    static std::uintptr_t base() noexcept { return heap_at(L, wasm::data_end()); }
+    static std::uintptr_t end() noexcept { return static_cast<std::uintptr_t>(wasm::given()); }
+};
+
+// `boot` checked against the stack the module was linked with, the host's
+// clock and hostcall installed.
+std::uint32_t boot_module(const Layout &layout, std::uint32_t stack_bytes) noexcept;
+
+#endif
+
+} // namespace xpute
+
+#ifdef __wasm__
+
+// A guest built as a WebAssembly module, in one declaration: its layout
+// (`Layout::DEFAULT` in `XPUTE_PROGRAM`), the stack it was linked with (the
+// spec's `program::STACK_BYTES` in `XPUTE_PROGRAM`, as cpp/Makefile links the
+// example), and a handler for each command (`on`). It defines the module's
+// allocator over its heap, and exports `run`, the turn, and `boot`, which lays
+// the range out and answers where the toc lies (@xpute/host port.ts `open`).
+#define XPUTE_PROGRAM_WITH(layout, stack_bytes, ...)                                                                      \
+    namespace {                                                                                                           \
+    constexpr ::xpute::Layout xpute_layout = (layout);                                                                    \
+    ::xpute::SlabMalloc<::xpute::ProgramHeap<xpute_layout>> xpute_heap;                                                   \
+    void *xpute_alloc(std::size_t n, std::size_t align) noexcept {                                                        \
+        void *p = xpute_heap.alloc(n, align);                                                                             \
+        if (p == nullptr) ::xpute::bug(::xpute::Errno::enomem, n);                                                        \
+        return p;                                                                                                         \
+    }                                                                                                                     \
+    }                                                                                                                     \
+    void *operator new(std::size_t n) { return xpute_alloc(n, alignof(std::max_align_t)); }                               \
+    void *operator new(std::size_t n, std::align_val_t a) { return xpute_alloc(n, static_cast<std::size_t>(a)); }         \
+    void *operator new(std::size_t n, const std::nothrow_t &) noexcept { return xpute_heap.alloc(n, alignof(std::max_align_t)); } \
+    void *operator new(std::size_t n, std::align_val_t a, const std::nothrow_t &) noexcept {                              \
+        return xpute_heap.alloc(n, static_cast<std::size_t>(a));                                                          \
+    }                                                                                                                     \
+    void operator delete(void *p, std::size_t n) noexcept {                                                               \
+        if (p != nullptr) xpute_heap.dealloc(p, n, alignof(std::max_align_t));                                            \
+    }                                                                                                                     \
+    void operator delete(void *p, std::size_t n, std::align_val_t a) noexcept {                                           \
+        if (p != nullptr) xpute_heap.dealloc(p, n, static_cast<std::size_t>(a));                                          \
+    }                                                                                                                     \
+    /* Without its size a block cannot be given back to a slab. */                                                        \
+    void operator delete(void *p) noexcept {                                                                              \
+        if (p != nullptr) ::xpute::bug(::xpute::Errno::enotrecoverable);                                                  \
+    }                                                                                                                     \
+    void operator delete(void *p, std::align_val_t) noexcept {                                                            \
+        if (p != nullptr) ::xpute::bug(::xpute::Errno::enotrecoverable);                                                  \
+    }                                                                                                                     \
+    extern "C" __attribute__((export_name("boot"))) std::uint32_t boot() {                                                \
+        return ::xpute::boot_module(xpute_layout, (stack_bytes));                                                         \
+    }                                                                                                                     \
+    extern "C" __attribute__((export_name("run"))) double run(double) {                                                   \
+        static constexpr ::xpute::On xpute_handlers[]{__VA_ARGS__};                                                       \
+        return ::xpute::turn(xpute_handlers);                                                                             \
+    }
+
+// `XPUTE_PROGRAM_WITH` with the default layout and stack.
+#define XPUTE_PROGRAM(...) XPUTE_PROGRAM_WITH(::xpute::Layout::DEFAULT, ::xpute::program::STACK_BYTES, __VA_ARGS__)
+
+#endif
+
+// cpp/xpute/guest/sched/wake.hpp
+
+// What a falling edge answers besides a delay. When the next turn runs, and
+// how much it gets, is the host's scheduling policy's.
+
+namespace xpute {
+
+// The guest waits on something only the host can bring, an input or an arrival.
+inline constexpr double NO_WAKE = -1.0;
+
+} // namespace xpute
+
 // cpp/xpute/guest/sched/edge.hpp
 
 // A guest's side of the turn: the quota as a deadline, the tasks parked until
@@ -4294,7 +4842,7 @@ namespace xpute {
 struct PassStat {
     std::uint32_t ran = 0;
     // With the steps that did no work, and the one that tripped the stop.
-    std::uint32_t visited = 0;
+    std::uint32_t step_cnt = 0;
     double elapsed_ms = 0;
     bool stopped_early = false;
 
@@ -4325,11 +4873,11 @@ struct Pass {
         for (auto &&item : items) {
             double at = now();
             // Before the waiver below, but the first item is always tried.
-            if ((stat.visited > 0 && at >= hard_deadline) || (stat.ran > 0 && (stat.ran >= cap || at >= deadline))) {
+            if ((stat.step_cnt > 0 && at >= hard_deadline) || (stat.ran > 0 && (stat.ran >= cap || at >= deadline))) {
                 stat.stopped_early = true;
                 break;
             }
-            stat.visited++;
+            stat.step_cnt++;
             if (step(item)) stat.ran++;
         }
         stat.elapsed_ms = now() - start;
@@ -4515,64 +5063,32 @@ template <std::size_t N> class Tick {
 
 } // namespace xpute
 
-// cpp/xpute/guest/wasm.hpp
+// cpp/xpute/guest/stop.hpp
 
-// The guest built as one WebAssembly module: what it reads of the module
-// itself, what it asks of its host (`hostcall`), and its entry, `run`, which the floor names and the program
-// defines. Linked as every module guest is (cpp/Makefile `WASM_LINK`).
+// How a guest stops: a broken invariant (`bug`), published to the host as the
+// turn's one record (what `stop::install` is given, the guest's `Sys::abort`)
+// and told to the hook of a form whose process dies with the guest. C++ has
+// no panic of its own: what libc++ aborts on is a bug (kit status/bug.cpp).
 
-#ifdef __wasm__
+namespace xpute::stop {
 
-extern "C" {
+// Numbers only: formatting is the hook's.
+struct Stop {
+    Errno errnum;
+    const std::source_location &at;
+    std::uint64_t a;
+    std::uint64_t b;
+};
 
-// Defined by wasm-ld. The end of .rodata, .data and .bss, where a guest may
-// begin placing its own ranges: not __heap_base, which a C runtime's sbrk
-// starts at, since a guest's heap is where the guest says.
-extern const std::uint8_t __data_end;
-// The top of the stack: -z stack-size past its start, which --stack-first
-// puts at the bottom of the memory.
-extern const std::uint8_t __stack_high;
+// Where a form whose process dies with the guest says why: no host is left to
+// run the record.
+using Hook = void (*)(const Stop &);
 
-// Imports of `env`, the module the host instantiates with.
-__attribute__((import_module("env"), import_name("now"))) double xpute_wasm_now(void);
-__attribute__((import_module("env"), import_name("hostcall"))) std::int32_t xpute_wasm_hostcall(std::uint32_t at);
+// Installs the bug reporter, once at boot: `abort` publishes the record,
+// `hook` is the form's, none where the host outlives the guest (a page).
+void install(Report abort, Hook hook = nullptr) noexcept;
 
-// The entry: a turn of quota_ms, and when the guest wants the next, in ms
-// (0 for the next turn, NO_WAKE in xpute/guest/sched/wake.hpp for none).
-double run(double quota_ms);
-}
-
-namespace xpute::wasm {
-
-// A WebAssembly page, the unit a memory is declared and grown in.
-inline constexpr std::uint64_t WASM_PAGE_BYTES = 1 << 16;
-
-inline std::uint32_t data_end() noexcept {
-    return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(&__data_end));
-}
-
-// Its size, with the stack first.
-inline std::uint32_t stack_high() noexcept {
-    return static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(&__stack_high));
-}
-
-// The bytes of memory the host has grown the module to.
-inline std::uint64_t given() noexcept {
-    return std::uint64_t{__builtin_wasm_memory_size(0)} * WASM_PAGE_BYTES;
-}
-
-inline double now() noexcept {
-    return xpute_wasm_now();
-}
-
-// What the record names, the host reads and writes before it returns.
-inline std::int32_t hostcall(std::uint32_t at) noexcept {
-    return xpute_wasm_hostcall(at);
-}
-
-} // namespace xpute::wasm
-
-#endif
+} // namespace xpute::stop
 
 // cpp/xpute/gpu/api.spec.hpp
 //
@@ -4590,7 +5106,7 @@ namespace xpute::gpu {
 // An optional field left unset, an index or a handle absent.
 inline constexpr std::uint32_t NONE = 4294967295u;
 
-// Or-ed into a ticket where a completion word is written (COPY_EXTERNAL_IMAGE, MAP_ASYNC, QUEUE_DONE).
+// Or-ed into a ticket where a completion word is written (COPY_EXTERNAL_IMAGE, MAP_ASYNC, QUEUE_DONE, RENDER_PIPELINE_ASYNC, COMPUTE_PIPELINE_ASYNC).
 inline constexpr std::uint32_t DONE = 2147483648u;
 
 // In CONFIGURE's format: the format the host's surface prefers.
@@ -4748,6 +5264,12 @@ inline constexpr std::uint32_t CURRENT = 47u;
 
 // address, words: the host writes there the device's limits (LIMIT_NAME, a word each), then its features (FEATURE_NAME, a bit each, in words), then its timestamp period (f32 bits: the nanoseconds a resolved timestamp's unit is, 1 where they are nanoseconds as WebGPU's are), then the surface format it prefers (TEXTURE_FORMAT: what SURFACE_PREFERRED names, as the web's getPreferredCanvasFormat), then STATUS.
 inline constexpr std::uint32_t DEVICE = 48u;
+
+// RENDER_PIPELINE's words, then word, ticket: WebGPU's createRenderPipelineAsync. Once the pipeline is made, ticket | DONE at the word, where the ticket still stands; the guest names the pipeline in no other record until it holds DONE. One the device refuses is made as RENDER_PIPELINE makes it, its error reported as that op's, and its word written all the same. A host with no async call makes it at once and writes the word by the same path, before the next turn reads it.
+inline constexpr std::uint32_t RENDER_PIPELINE_ASYNC = 49u;
+
+// COMPUTE_PIPELINE's words, then word, ticket: WebGPU's createComputePipelineAsync, its word as RENDER_PIPELINE_ASYNC's.
+inline constexpr std::uint32_t COMPUTE_PIPELINE_ASYNC = 50u;
 } // namespace op
 
 enum class BindingKind : std::uint8_t {
@@ -5576,7 +6098,7 @@ template <class F> bool emit(Stream &stream, std::uint32_t op, F &&put) noexcept
 }
 
 // What a record takes of a stream's room, measured as `emit` writes it.
-template <class F> std::uint64_t measured(F &&put) noexcept {
+template <class F> std::uint64_t record_size(F &&put) noexcept {
     Count count;
     put(count);
     return (2 + std::uint64_t{count.n}) * WORD;
@@ -5596,6 +6118,58 @@ template <class S> void buffer_layout(S &s, const TexelCopyBuffer &b) noexcept {
 template <class S> void extent(S &s, std::array<std::uint32_t, 3> e) noexcept { words(s, {e[0], e[1], e[2]}); }
 
 template <class S> void stencil_face(S &s, const StencilFaceState &f) noexcept { words(s, {u(f.compare), u(f.fail), u(f.depth_fail), u(f.pass)}); }
+
+// A render pipeline's words but its id (RENDER_PIPELINE).
+template <class S> void render_pipeline_words(S &s, const RenderPipelineDescriptor &d) noexcept {
+    s.word(opt(d.layout));
+    const VertexState &v = d.vertex;
+    s.word(v.module);
+    s.bytes(text(v.entry));
+    s.word(static_cast<std::uint32_t>(v.buffers.size()));
+    for (const VertexBufferLayout &b : v.buffers) {
+        words(s, {b.stride, u(b.step), static_cast<std::uint32_t>(b.attributes.size())});
+        for (const VertexAttribute &a : b.attributes) words(s, {u(a.format), a.offset, a.location});
+    }
+    const PrimitiveState &p = d.primitive;
+    words(s, {u(p.topology), opt(p.strip_index_format), u(p.front_face), u(p.cull), flag(p.unclipped_depth)});
+    if (const auto &ds = d.depth_stencil) {
+        words(s, {u(ds->format), flag(ds->depth_write), u(ds->depth_compare)});
+        stencil_face(s, ds->stencil_front);
+        stencil_face(s, ds->stencil_back);
+        words(s, {ds->stencil_read_mask, ds->stencil_write_mask, static_cast<std::uint32_t>(ds->bias), f(ds->slope_scale), f(ds->clamp)});
+    } else {
+        // Present either way, so the record's shape is fixed.
+        s.word(NONE);
+        for (int k = 0; k < 2 + 8 + 5; k++) s.word(0);
+    }
+    const MultisampleState &m = d.multisample;
+    words(s, {m.count, m.mask, flag(m.alpha_to_coverage)});
+    if (const auto &fr = d.fragment) {
+        s.word(fr->module);
+        s.bytes(text(fr->entry));
+        s.word(static_cast<std::uint32_t>(fr->targets.size()));
+        for (const ColorTargetState &t : fr->targets) {
+            s.word(u(t.format));
+            if (const auto &b = t.blend) {
+                words(s, {u(b->color.operation), u(b->color.src), u(b->color.dst), u(b->alpha.operation), u(b->alpha.src), u(b->alpha.dst)});
+            } else {
+                s.word(NONE);
+                for (int k = 0; k < 5; k++) s.word(0);
+            }
+            s.word(t.write_mask);
+        }
+    } else {
+        s.word(NONE);
+        s.bytes({});
+        s.word(0);
+    }
+}
+
+// A compute pipeline's words but its id (COMPUTE_PIPELINE).
+template <class S> void compute_pipeline_words(S &s, const ComputePipelineDescriptor &d) noexcept {
+    words(s, {opt(d.layout), d.module});
+    s.bytes(text(d.entry));
+}
 
 } // namespace detail
 
@@ -5639,6 +6213,15 @@ template <std::size_t N> class Gpu {
         return make(stream, op::SHADER_MODULE, [&](auto &s) { s.bytes(detail::text(wgsl)); });
     }
 
+    // What shader_module takes of a stream's room (Stream::fits), so a caller
+    // making several asks before each.
+    static std::uint64_t shader_module_bytes(std::string_view wgsl) noexcept {
+        return detail::record_size([&](auto &s) {
+            s.word(0);
+            s.bytes(detail::text(wgsl));
+        });
+    }
+
     std::optional<Id> bind_group_layout(Stream &stream, std::span<const BindGroupLayoutEntry> entries) noexcept {
         using detail::flag;
         using detail::u;
@@ -5680,60 +6263,31 @@ template <std::size_t N> class Gpu {
     }
 
     std::optional<Id> render_pipeline(Stream &stream, const RenderPipelineDescriptor &d) noexcept {
-        using detail::f;
-        using detail::flag;
-        using detail::opt;
-        using detail::u;
-        return make(stream, op::RENDER_PIPELINE, [&](auto &s) {
-            s.word(opt(d.layout));
-            const VertexState &v = d.vertex;
-            s.word(v.module);
-            s.bytes(detail::text(v.entry));
-            s.word(static_cast<std::uint32_t>(v.buffers.size()));
-            for (const VertexBufferLayout &b : v.buffers) {
-                detail::words(s, {b.stride, u(b.step), static_cast<std::uint32_t>(b.attributes.size())});
-                for (const VertexAttribute &a : b.attributes) detail::words(s, {u(a.format), a.offset, a.location});
-            }
-            const PrimitiveState &p = d.primitive;
-            detail::words(s, {u(p.topology), opt(p.strip_index_format), u(p.front_face), u(p.cull), flag(p.unclipped_depth)});
-            if (const auto &ds = d.depth_stencil) {
-                detail::words(s, {u(ds->format), flag(ds->depth_write), u(ds->depth_compare)});
-                detail::stencil_face(s, ds->stencil_front);
-                detail::stencil_face(s, ds->stencil_back);
-                detail::words(s, {ds->stencil_read_mask, ds->stencil_write_mask, static_cast<std::uint32_t>(ds->bias), f(ds->slope_scale), f(ds->clamp)});
-            } else {
-                // Present either way, so the record's shape is fixed.
-                s.word(NONE);
-                for (int k = 0; k < 2 + 8 + 5; k++) s.word(0);
-            }
-            const MultisampleState &m = d.multisample;
-            detail::words(s, {m.count, m.mask, flag(m.alpha_to_coverage)});
-            if (const auto &fr = d.fragment) {
-                s.word(fr->module);
-                s.bytes(detail::text(fr->entry));
-                s.word(static_cast<std::uint32_t>(fr->targets.size()));
-                for (const ColorTargetState &t : fr->targets) {
-                    s.word(u(t.format));
-                    if (const auto &b = t.blend) {
-                        detail::words(s, {u(b->color.operation), u(b->color.src), u(b->color.dst), u(b->alpha.operation), u(b->alpha.src), u(b->alpha.dst)});
-                    } else {
-                        s.word(NONE);
-                        for (int k = 0; k < 5; k++) s.word(0);
-                    }
-                    s.word(t.write_mask);
-                }
-            } else {
-                s.word(NONE);
-                s.bytes({});
-                s.word(0);
-            }
+        return make(stream, op::RENDER_PIPELINE, [&](auto &s) { detail::render_pipeline_words(s, d); });
+    }
+
+    // As render_pipeline, made where the host can without holding its thread:
+    // `word` holds `ticket | DONE` once it is made, and no record names it before.
+    std::optional<Id> render_pipeline_async(Stream &stream, const RenderPipelineDescriptor &d, std::uint32_t &word, std::uint32_t ticket) noexcept {
+        word = ticket;
+        std::uint32_t at = stream.mem().off_of(&word);
+        return make_as(stream, op::RENDER_PIPELINE_ASYNC, op::RENDER_PIPELINE, [&](auto &s) {
+            detail::render_pipeline_words(s, d);
+            detail::words(s, {at, ticket});
         });
     }
 
     std::optional<Id> compute_pipeline(Stream &stream, const ComputePipelineDescriptor &d) noexcept {
-        return make(stream, op::COMPUTE_PIPELINE, [&](auto &s) {
-            detail::words(s, {detail::opt(d.layout), d.module});
-            s.bytes(detail::text(d.entry));
+        return make(stream, op::COMPUTE_PIPELINE, [&](auto &s) { detail::compute_pipeline_words(s, d); });
+    }
+
+    // As compute_pipeline, its word as render_pipeline_async's.
+    std::optional<Id> compute_pipeline_async(Stream &stream, const ComputePipelineDescriptor &d, std::uint32_t &word, std::uint32_t ticket) noexcept {
+        word = ticket;
+        std::uint32_t at = stream.mem().off_of(&word);
+        return make_as(stream, op::COMPUTE_PIPELINE_ASYNC, op::COMPUTE_PIPELINE, [&](auto &s) {
+            detail::compute_pipeline_words(s, d);
+            detail::words(s, {at, ticket});
         });
     }
 
@@ -5823,9 +6377,13 @@ template <std::size_t N> class Gpu {
   private:
     // An object's handle, written by `op` as the record's first word; none
     // where the table is full or the record did not fit.
-    template <class F> std::optional<Id> make(Stream &stream, std::uint32_t op, F &&put) noexcept {
-        bool lasts = op < OBJECT_OPS;
-        std::optional<std::uint32_t> id = handles_.insert(lasts ? static_cast<std::uint8_t>(op) : 0);
+    template <class F> std::optional<Id> make(Stream &stream, std::uint32_t op, F &&put) noexcept { return make_as(stream, op, op, put); }
+
+    // As make, the object counted as `kind` makes it: an async pipeline as its
+    // sync op's.
+    template <class F> std::optional<Id> make_as(Stream &stream, std::uint32_t op, std::uint32_t kind, F &&put) noexcept {
+        bool lasts = kind < OBJECT_OPS;
+        std::optional<std::uint32_t> id = handles_.insert(lasts ? static_cast<std::uint8_t>(kind) : 0);
         if (!id) return std::nullopt;
         if (!detail::emit(stream, op, [&](auto &s) {
                 s.word(*id);
@@ -5834,7 +6392,7 @@ template <std::size_t N> class Gpu {
             handles_.remove(*id);
             return std::nullopt;
         }
-        if (lasts) objects_[op]++;
+        if (lasts) objects_[kind]++;
         return id;
     }
 

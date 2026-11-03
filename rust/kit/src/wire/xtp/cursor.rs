@@ -2,7 +2,6 @@
 
 //! The read end: lazy cursors over a packet. Nothing is decoded until a `get`.
 
-// Stateless helpers are uppercase, as the C header's macros they mirror.
 #![allow(non_snake_case)]
 
 use crate::status::errno::Errno;
@@ -657,7 +656,7 @@ impl<'a> BranchCursor<'a> {
     }
 }
 
-fn bytes_of<T: Copy>(a: &[T]) -> &[u8] {
+pub(super) fn bytes_of<T: Copy>(a: &[T]) -> &[u8] {
     // SAFETY: the elements are the packet's own bytes, read back as bytes.
     unsafe { core::slice::from_raw_parts(a.as_ptr() as *const u8, core::mem::size_of_val(a)) }
 }

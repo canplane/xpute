@@ -6,6 +6,7 @@
 //! which answers it on its own thread and waits again.
 
 use core::cell::{Cell, RefCell};
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -23,6 +24,8 @@ enum Back {
     Done,
     /// A hostcall's record, at its offset, for the caller to answer.
     Hostcall(u32),
+    /// The guest has stopped: its thread runs nothing again (`stopped`).
+    Stopped,
 }
 
 struct Handoff {
@@ -58,9 +61,9 @@ thread_local! {
 }
 
 /// The handoff, held, this thread its holder until it is let go.
-struct Held(MutexGuard<'static, Handoff>);
+struct Guard(MutexGuard<'static, Handoff>);
 
-impl Drop for Held {
+impl Drop for Guard {
     fn drop(&mut self) {
         HOLDING.with(|h| h.set(false));
     }
@@ -68,7 +71,7 @@ impl Drop for Held {
 
 /// The handoff, refused where taking it would wait for itself: on the guest's
 /// thread, or on one that holds it. A poisoned lock is still whole.
-fn handoff() -> Held {
+fn handoff() -> Guard {
     assert!(
         !on_marked_thread(),
         "a call into the guest from its own thread would wait for itself"
@@ -77,7 +80,7 @@ fn handoff() -> Held {
         !HOLDING.with(Cell::get),
         "a call into the guest inside another on the same thread would wait for itself"
     );
-    let held = Held(
+    let held = Guard(
         HANDOFF
             .get()
             .expect("the guest is booted")
@@ -89,7 +92,7 @@ fn handoff() -> Held {
 }
 
 /// Starts the guest's thread and runs `first` there before anything else.
-pub fn start(name: &'static str, stack_bytes: usize, first: impl FnOnce() + Send) {
+pub(super) fn start(name: &'static str, stack_bytes: usize, first: impl FnOnce() + Send) {
     let (jobs, next) = sync_channel::<Job>(1);
     let (sent, back) = sync_channel::<Back>(1);
     let (answers, answered) = sync_channel::<i32>(1);
@@ -121,7 +124,7 @@ pub fn start(name: &'static str, stack_bytes: usize, first: impl FnOnce() + Send
 
 /// The guest's hostcall, on its own thread inside a call: handed to the
 /// caller waiting on it, which runs the program's answer.
-pub fn hostcall(at: u32) -> i32 {
+pub(super) fn hostcall(at: u32) -> i32 {
     GUEST_END.with(|e| {
         let e = e.borrow();
         let (sent, answered) = e
@@ -132,10 +135,31 @@ pub fn hostcall(at: u32) -> i32 {
     })
 }
 
+/// The guest has stopped, on its own thread, inside a call: the caller is told, and
+/// this thread stays here, with the guest's stack and locks as they are, so the
+/// process goes on without it.
+pub fn stopped() -> ! {
+    GUEST_END.with(|e| {
+        let e = e.borrow();
+        let (sent, _) = e.as_ref().expect("a stop is on the guest's thread");
+        sent.send(Back::Stopped).expect("the caller is gone");
+    });
+    loop {
+        std::thread::park();
+    }
+}
+
+/// The guest has stopped.
+static STOPPED: AtomicBool = AtomicBool::new(false);
+
 /// `f` on the guest's thread, the caller waiting; each hostcall it makes
-/// meanwhile answered on the caller's.
-pub fn run<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+/// meanwhile answered on the caller's. None where the guest has stopped, in this
+/// call or before it.
+pub(super) fn run<R: Send>(f: impl FnOnce() -> R + Send) -> Option<R> {
     let h = handoff();
+    if STOPPED.load(Ordering::Relaxed) {
+        return None;
+    }
     let mut f = Some(f);
     let mut out = None;
     let mut run = || out = f.take().map(|f| f());
@@ -144,17 +168,31 @@ pub fn run<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     // thread; this call waits for the run to finish before `run` goes.
     let run: *mut (dyn FnMut() + Send + 'static) = unsafe { core::mem::transmute(run) };
     h.0.jobs.send(Job(run)).expect("the guest's thread is gone");
-    while let Back::Hostcall(at) = h.0.back.recv().expect("the guest's thread is gone") {
-        h.0.answers
-            .send(answer(at))
-            .expect("the guest's thread is gone");
+    loop {
+        match h.0.back.recv().expect("the guest's thread is gone") {
+            Back::Hostcall(at) => {
+                h.0.answers
+                    .send(answer(at))
+                    .expect("the guest's thread is gone")
+            }
+            Back::Done => break,
+            // `run` is left as it is, on a stack that never runs again.
+            Back::Stopped => {
+                STOPPED.store(true, Ordering::Relaxed);
+                return None;
+            }
+        }
     }
     drop(h);
-    out.expect("the guest's thread ran the call")
+    Some(out.expect("the guest's thread ran the call"))
 }
 
 /// `f` on this thread, the handoff held so the guest's runs nothing meanwhile.
-pub fn while_idle<R>(f: impl FnOnce() -> R) -> R {
+pub(super) fn while_idle<R>(f: impl FnOnce() -> R) -> R {
     let _h = handoff();
     f()
 }
+
+#[cfg(test)]
+#[path = "thread.test.rs"]
+mod test;

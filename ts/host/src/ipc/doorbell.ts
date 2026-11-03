@@ -87,21 +87,28 @@ export class Doorbell implements PacketRoom {
 
   /** As the port `src`. */
   send(src: u32, cmd: u32, pkt: PacketWriter | null = null): void {
-    this.submit(frame.tagged(src, 0), cmd, pkt, 0);
+    this.submit(frame.tag_of(src, 0), cmd, pkt, 0);
   }
 
   /** `cmd` sent as the port `src` and rung, its arguments its packet's fields
    * in turn, each lowered as XTP lowers a value (wire/xtp `TreeView.set`): a
    * command from outside the host's own code, a console's. */
   cmd(src: u32, cmd: u32, ...args: NodeValue<NodeView>[]): void {
-    const pkt = args.length === 0 ? null : this.writer(args.length);
+    this.send(src, cmd, this.lower(args));
+    this.ring(0);
+  }
+
+  /** The next submission's packet, `args` its fields in turn, each lowered as
+   * XTP lowers a value (wire/xtp `TreeView.set`); none for no arguments. */
+  lower(args: NodeValue<NodeView>[]): PacketWriter | null {
+    if (args.length === 0) return null;
+    const pkt = this.writer(args.length);
     // Each is grafted into the slot, so a slot is its most.
     const cap = { init_cap: this.sq.slot_bytes, max_cap: this.sq.slot_bytes };
     for (const a of args) {
-      pkt?.graft(encoder.encode(new TreeView().set(a), cap));
+      pkt.graft(encoder.encode(new TreeView().set(a), cap));
     }
-    this.send(src, cmd, pkt);
-    this.ring(0);
+    return pkt;
   }
 
   ring(quota_ms: f64): f64 {
@@ -111,11 +118,12 @@ export class Doorbell implements PacketRoom {
     try {
       wake = this.run(quota_ms);
     } catch (err) {
-      // Printed here, once: what a caller catches next is only the stop.
+      // Printed here, once, and told: a turn's caller is a timer or an event,
+      // with nothing to do about it.
       console.error("[xpute/doorbell] the guest trapped:", err);
       this.trapped = true;
       this.stopped?.();
-      throw err;
+      return NO_WAKE;
     }
     this.read();
     this.wake?.(wake);
@@ -123,16 +131,17 @@ export class Doorbell implements PacketRoom {
   }
 
   /** Submitted as the port `src` with ACKREQ and rung with no quota until the
-   * reply returns; the reply is valid only inside `take`. */
+   * reply returns; the reply is valid only inside `take`. A guest that has
+   * trapped answers ENOTRECOVERABLE, with no reply. */
   call<T>(
     src: u32,
     cmd: u32,
     pkt: PacketWriter | null,
     take: (result: i32, reply: BranchCursor | null) => T,
   ): T {
-    if (this.trapped) throw new InvariantError(Errno.ENOTRECOVERABLE);
+    if (this.trapped) return take(Errno.ENOTRECOVERABLE, null);
     this.next_call = frame.id_of(this.next_call + 1);
-    const tag = frame.tagged(src, this.next_call);
+    const tag = frame.tag_of(src, this.next_call);
     let out: { val: T } | null = null;
     this.waiting.set(tag, (result, f) => (out = { val: take(result, f) }));
     try {
@@ -140,6 +149,7 @@ export class Doorbell implements PacketRoom {
       while (out === null) {
         const pending = this.sq.len;
         this.ring(0);
+        if (this.trapped) return take(Errno.ENOTRECOVERABLE, null);
         if (out === null && pending === 0) {
           throw new InvariantError(Errno.EPROTO);
         }

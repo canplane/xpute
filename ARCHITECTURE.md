@@ -59,7 +59,9 @@ memory, set once (`core`, `at`).
 What goes in the memory is the guest's, and so is where. It lays ranges end to
 end on a unit it chooses (`mem/section`), as a linker script places output
 sections without knowing what they hold, and whatever is asked of a range is
-checked against its end (`Section::at`, `nth`). The host is told where the parts
+checked against its end (`Section::at`, `nth`); a range sized at compile time is
+handed to its owner once at boot and read as an array laid in it (`mem/range`
+`OwnedRange`, `arr`). The host is told where the parts
 it reads lie by a **toc**, a table of contents as a CD's tells where each track
 begins (`ipc/toc`, `spec/ipc/toc.json`), which the guest writes in its first
 turn, or in a boot call that returns its offset; the host learns that one offset
@@ -124,6 +126,12 @@ its meaning and numbers its commands as it likes. The host hands a frame to the
 port it names where one is attached and drops it where none is, as a datagram
 goes to the UDP port it names; the ports are the program's ABI, as UDP's
 well-known ones are a convention.
+
+Where what answers a port runs is the program's choice. What runs on the
+guest's thread (the doorbell, the rings, the hostcalls, the GPU host, and any
+port answered there) takes turns with the guest and reads its memory in place,
+at any address a call answers or a packet names; a call answered before it
+returns (`call`) is made only there.
 
 Two flags decide what a frame means. `ACKREQ`, set by whoever submits, asks for
 a reply. `RES`, set by whoever completes, says the frame is a reply. A
@@ -216,7 +224,8 @@ sent and rung. A guest that traps is gone, and the doorbell rings it no more.
 
 The guest's end is the **door** (`ipc/door` `Door`). It applies the submissions
 in order, answers each, and posts what the guest raises into the completion
-ring, for the port it names (`raise`), which holds a whole turn's output.
+ring, for the port it names (`raise`, or `raise_to` for an event its table
+generates, `Event`), which holds a whole turn's output.
 What the host sent it applies itself, and hands the program every other sender's
 and each open the host completed (`Submission`). A drain runs before any phase's budget, so the program records what it is handed
 and returns. Before each submission the door checks that the ring has room for
@@ -383,7 +392,8 @@ the invariant that stopped the guest; a program numbers its own with the
 `PROGRAM` bit. Each is a record (`ipc/sys`, `spec/ipc/sys.json`), run after the
 turn from one stream the toc names (`SYS`), or, a program's own, at once
 (below). The report (`ABORT`) drops the turn's other calls and is published
-alone, at once.
+alone, at once; a guest's bug reporter and, in Rust, its panic hook publish it
+(`stop`), which `program!` and `XPUTE_PROGRAM` install.
 
 Files borrow Plan 9's file namespace:
 
@@ -457,10 +467,14 @@ A guest writes them through the encoder (`gpu/encode`), which takes each
 object's handle from one table and writes each record twice, once to count its
 words and once into the room reserved for them. The **GPU host** runs the stream
 on its device after the turn returns (`gpu/host` `GpuHost`): on WebGPU in a
-page, on wgpu in a native program. Three calls finish later — an image copied
-in, a buffer read back, the queue's work done — so each names a word of the
-guest's memory and a ticket, a number the guest wrote there; once the call is
-done, the GPU host writes the ticket back with `DONE` set.
+page, on wgpu in a native program. Some calls finish later — an image copied
+in, a buffer read back, the queue's work done, a pipeline made by WebGPU's
+async call — so each names a word of the guest's memory and a ticket, a number
+the guest wrote there; once the call is done, the GPU host writes the ticket
+back with `DONE` set. A guest names an async pipeline in no record until its
+word says `DONE`, so nothing it records waits on the host. wgpu has no async
+call: the native GPU host makes the pipeline at once and writes its word by
+the same path.
 
 What a surface shows — a canvas, a view's layer, a window — is the program's,
 bound to the GPU host under the guest's handle for it and let go by that handle
@@ -509,9 +523,8 @@ one the other end could catch being broken.
    returns its offset, and the host finds everything from the one offset it
    learns outside. A key appears at most once, an unknown key is passed over,
    and an unknown magic or version is refused.
-1. **The core memory.** It never moves or grows while the guest lives, and every
-   address that crosses is an offset into it. Offset 0 names nothing, and
-   nothing that crosses lies there.
+1. **The core memory.** Every address that crosses is an offset into it.
+   Offset 0 names nothing, and nothing that crosses lies there.
 2. **The turn.** The guest runs only inside `run`, and the two sides never run
    at once: the host touches nothing a turn writes until it has returned, but
    what a hostcall run now names while it runs (rule 8). The quota is advice,
@@ -571,21 +584,32 @@ decides what must match.
   nothing facing it is whole.
 - **Guest ends are symmetric with each other.** Rust (`rust/guest`) and C++
   (`cpp/xpute/guest`) are the same end, either plugged into any host, so what
-  one gives a program the other gives too.
+  one gives a program the other gives too. Both give a guest in one
+  declaration (`xpute-guest/program.rs` `program!`,
+  `cpp/xpute/guest/program.hpp` `XPUTE_PROGRAM`), which lays the range out by
+  the same numbers (`spec/program.json`), runs the turns and hands each command
+  to a function the program names, and runs as tasks what waits on the host, a
+  file read whole awaited across turns (`read`: a future in Rust, a coroutine's
+  awaitable in C++); and both give the parts it composes. One example, in each
+  language (`rust/example`, `cpp/example`), is held to the same host's tests.
 - **Host ends hold what their platform needs.** TypeScript's (`ts/host`)
   reserves a module's memory and opens the module over it (`module.ts`), and
   mounts the doorbell, the hostcalls' end and the strobe on any guest its
   platform opened, in one call (`@xpute/host/host.ts` `mount`), which runs the
   hostcall stream as each turn returns. `mount` reads the toc as it is called,
-  so the turn or the boot call that writes it has run by then. Rust's
+  so the turn or the boot call that writes it has run by then. Over any mount a
+  **port** (`port.ts`) speaks as one sender, with a verb for each way a message
+  crosses: `send` and `on` by the rings, a turn later, and `call` directly,
+  answered before it returns; `open` opens a module built with `program!` or
+  `XPUTE_PROGRAM`, mounts on it and gives that port in one call. Rust's
   (`rust/host`) reads a guest's memory by offset on every platform (`mem`), and
   on a unix one hosts a guest linked into the host's own native process
-  (`native`). There it reserves the memory, and runs every call into the guest
-  on the guest's own thread, since the guest keeps its module-wide values in
-  `Global`s (`xpute-guest/global.rs`), statics sound on one thread alone,
-  handing each hostcall back to the caller that waits. It also provides the
-  allocator that keeps the guest's blocks in its memory and every other thread's
-  out of it.
+  (`native`). There it reserves
+  the memory, and runs every call into the guest on the guest's own thread,
+  since the guest keeps its module-wide values in `Global`s
+  (`xpute-guest/global.rs`), statics sound on one thread alone, handing each
+  hostcall back to the caller that waits. It also provides the allocator that
+  keeps the guest's blocks in its memory and every other thread's out of it.
 - **The GPU's calls follow the same split.** Each guest language writes them
   (`rust/gpu`, `cpp/xpute/gpu`). The GPU hosts run them in TypeScript on WebGPU
   (`ts/gpu`), and in Rust on wgpu behind the `host` feature.
@@ -594,7 +618,7 @@ decides what must match.
   traps; its stack's size and any front it keeps below the linker's data are its
   own numbers. Rust's build script prints the flags (`xpute-guest/wasm/link.rs`
   `link`), and the C++ guest is linked with the same (`cpp/Makefile`
-  `WASM_LINK`).
+  `MODULE_LINK`).
 
 `kit` asks nothing of a program: link it and call it. `guest` and `host` ask it
 to run xpute's way — memory granted once, work in turns, I/O by asking.
