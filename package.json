@@ -1,0 +1,28 @@
+{
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.21.0",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "check": "pnpm fmt:check && pnpm lint && pnpm typecheck",
+    "typecheck": "tsc -p . && tsc -p tsconfig.native.json",
+    "test": "vitest run",
+    "fmt": "prettier --write .",
+    "fmt:check": "prettier --check .",
+    "lint": "oxlint"
+  },
+  "devDependencies": {
+    "@xpute/link": "workspace:*",
+    "@xpute/host": "workspace:*",
+    "@xpute/kit": "workspace:*",
+    "@xpute/golden": "workspace:*",
+    "@types/node": "^26",
+    "oxlint": "^1.93.0",
+    "prettier": "^3.10.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
+  }
+}

@@ -12,13 +12,13 @@ Result<std::optional<Value>> Reader::next() noexcept {
     }
     auto tag = static_cast<Tag>(buf_[off_++]);
     auto scalar = [this]<class T>() -> Result<std::optional<Value>> {
-        if (!has(sizeof(T))) return marshal_error(Errno::ebadmsg);
+        if (!has(sizeof(T))) return make_error(Errno::ebadmsg);
         return std::optional<Value>(le<T>());
     };
     auto run = [this]() -> Result<std::span<const std::uint8_t>> {
-        if (!has(4)) return marshal_error(Errno::ebadmsg);
+        if (!has(4)) return make_error(Errno::ebadmsg);
         std::uint32_t len = le<std::uint32_t>();
-        if (!has(len)) return marshal_error(Errno::ebadmsg);
+        if (!has(len)) return make_error(Errno::ebadmsg);
         std::span<const std::uint8_t> bytes = buf_.subspan(off_, len);
         off_ += len;
         return bytes;
@@ -28,7 +28,7 @@ Result<std::optional<Value>> Reader::next() noexcept {
         end_ = End::closed;
         return std::optional<Value>();
     case Tag::boolean: {
-        if (!has(1)) return marshal_error(Errno::ebadmsg);
+        if (!has(1)) return make_error(Errno::ebadmsg);
         return std::optional<Value>(buf_[off_++] != 0);
     }
     case Tag::u8:
@@ -59,10 +59,10 @@ Result<std::optional<Value>> Reader::next() noexcept {
     case Tag::bytes: {
         Result<std::span<const std::uint8_t>> r = run();
         if (!r) return r.error();
-        return std::optional<Value>(Bytes{*r});
+        return std::optional<Value>(Blob{*r});
     }
     }
-    return marshal_error(Errno::ebadmsg);
+    return make_error(Errno::ebadmsg);
 }
 
 } // namespace xpute::tlv

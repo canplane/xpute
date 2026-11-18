@@ -1,7 +1,7 @@
 // cpp/xpute/kit/math/rng.64.hpp
 
-// The 64-bit family: splitmix64's finalizer, a seed derived through it, and
-// splitmix64's stream drawn as u32, each its word's high 32 bits.
+// The 64-bit family holds splitmix64's finalizer, a seed derived through it,
+// and splitmix64's stream, drawn as `u32` from the high 32 bits of each word.
 
 #pragma once
 
@@ -18,7 +18,7 @@ constexpr std::uint64_t mix64(std::uint64_t x) noexcept {
     return z ^ z >> 31;
 }
 
-constexpr std::uint64_t derive_seed_u64(std::uint64_t base, std::uint64_t tag) noexcept {
+constexpr std::uint64_t seed_mix64(std::uint64_t base, std::uint64_t tag) noexcept {
     return mix64(base ^ tag);
 }
 

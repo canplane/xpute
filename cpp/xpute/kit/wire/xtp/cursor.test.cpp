@@ -7,8 +7,8 @@
 #include <vector>
 
 #include "xpute/kit/codec/encoding.hpp"
-#include "xpute/kit/golden.hpp"
-#include "xpute/kit/test.hpp"
+#include "dev/test/golden.hpp"
+#include "dev/test/test.hpp"
 #include "cursor.hpp"
 #include "encode.hpp"
 
@@ -29,7 +29,8 @@ std::vector<std::uint8_t> bytes(const std::string &hex_text) {
     return out;
 }
 
-// The shortest digits that read back, as JavaScript prints.
+// A number as JavaScript prints one, which is the record's text: the shortest
+// digits that read back as the same double.
 std::string js_number(double x) {
     if (std::isnan(x)) return "NaN";
     char buf[64];
@@ -42,7 +43,7 @@ std::string errno_of(const Error &e) {
 }
 
 template <class T> std::string elements(const Array &a) {
-    Elements<T> e = a.elements<T>();
+    ArrayView<T> e = a.elements<T>();
     std::string out;
     for (std::uint32_t i = 0; i < e.size(); i++) {
         if (i) out += ' ';
@@ -52,7 +53,8 @@ template <class T> std::string elements(const Array &a) {
     return out;
 }
 
-// As the TypeScript prints it, so the traces compare.
+// A value as the TypeScript test prints it, so that the traces compare with
+// the golden record.
 std::string show(const Value &v) {
     return std::visit(
         [](const auto &x) -> std::string {
@@ -63,7 +65,7 @@ std::string show(const Value &v) {
             else if constexpr (std::is_same_v<T, std::uint64_t> || std::is_same_v<T, std::int64_t>) return "bigint:" + std::to_string(x);
             else if constexpr (std::is_floating_point_v<T>) return "number:" + js_number(x);
             else if constexpr (std::is_same_v<T, std::string_view>) return "string:" + hex({reinterpret_cast<const std::uint8_t *>(x.data()), x.size()});
-            else if constexpr (std::is_same_v<T, Strs>) {
+            else if constexpr (std::is_same_v<T, StrList>) {
                 std::string out = "[";
                 for (std::uint32_t i = 0; i < x.len; i++) {
                     std::string_view s = x[i];
@@ -133,9 +135,9 @@ std::string read_deep(std::span<const std::uint8_t> pkt) {
 } // namespace
 
 XPUTE_TEST(xtp_cursor_matches_other_languages) {
-    Golden v = Golden::load("spec/golden/wire/xtp/cursor.tsv");
-    v.each("packets", [&v](const std::string &k) {
-        std::vector<std::uint8_t> pkt = bytes(v.s(k + ".packet"));
+    Golden v = Golden::load("kit/spec/golden/wire/xtp/cursor.tsv");
+    v.each("pkts", [&v](const std::string &k) {
+        std::vector<std::uint8_t> pkt = bytes(v.s(k + ".pkt"));
         Result<TreeReader> reader = TreeReader::make(pkt);
         XPUTE_CHECK(reader.ok());
         Cursor root = reader->read();
@@ -152,12 +154,12 @@ XPUTE_TEST(xtp_cursor_matches_other_languages) {
         }
     });
 
-    const std::string &good = v.s("packets.0.packet");
+    const std::string &good = v.s("pkts.0.pkt");
     auto refused = [](const std::string &h) { return read_deep(bytes(h)); };
-    XPUTE_CHECK_EQ(refused(good.substr(0, 20)), v.s("malformed.truncated_header"), "a header cut short");
+    XPUTE_CHECK_EQ(refused(good.substr(0, 20)), v.s("malformed.truncated_hdr"), "a header cut short");
     XPUTE_CHECK_EQ(refused("00" + good.substr(2)), v.s("malformed.bad_magic"), "a magic that is not");
     XPUTE_CHECK_EQ(refused(good.substr(0, 40)), v.s("malformed.truncated_payload"), "a payload cut short");
-    v.each("refused", [&](const std::string &k) { XPUTE_CHECK_EQ(refused(v.s(k + ".packet")), v.s(k + ".read"), k.c_str()); });
+    v.each("refused", [&](const std::string &k) { XPUTE_CHECK_EQ(refused(v.s(k + ".pkt")), v.s(k + ".read"), k.c_str()); });
 
     const std::uint32_t aligns[] = {0x7ffffff9u, 0xfffffff8u, 0xfffffff9u};
     for (std::size_t j = 0; j < 3; j++) {
@@ -184,7 +186,7 @@ XPUTE_TEST(xtp_pkt_round_trip) {
     w.branch(6, [&](PacketWriter &b) {
         b.i32(42).str("hello").boolean(true).nil();
         b.branch(2, [](PacketWriter &b) { b.i32(1).i64(-2); });
-        b.i32_array(ints);
+        b.array<std::int32_t>(ints);
     });
     std::span<const std::uint8_t> pkt = std::span(buf).first(w.finish().value());
     BranchCursor root = TreeReader::make(pkt)->read_branch().value();
@@ -194,7 +196,7 @@ XPUTE_TEST(xtp_pkt_round_trip) {
     XPUTE_CHECK_EQ(root.at(5)->get_array<std::int32_t>().value()[1], 8, "an element");
     XPUTE_CHECK(!root.at(5)->get_array<std::uint32_t>().ok());
     XPUTE_CHECK(!root.at_branch(4)->at(1)->get_number().ok());
-    XPUTE_CHECK_EQ(root.at_branch(4)->at(1)->get_i64().value(), -2, "a 64-bit integer");
+    XPUTE_CHECK_EQ(std::get<std::int64_t>(root.at_branch(4)->at(1)->get().value()), -2, "a 64-bit integer");
     XPUTE_CHECK_EQ(root.at(6).error().errnum, Errno::efault, "past the last child");
 
     std::array<std::uint8_t, 64> one{};
@@ -211,8 +213,8 @@ XPUTE_TEST(xtp_pkt_reads_anywhere) {
     std::array<std::uint8_t, 64> buf{};
     PacketWriter w{std::span(buf).subspan(1)};
     const std::array<double, 2> xs{0.5, -4.0};
-    w.f64_array(xs);
+    w.array<double>(xs);
     std::span<const std::uint8_t> pkt = std::span(buf).subspan(1, w.finish().value());
-    Elements<double> e = TreeReader::make(pkt)->read().get_array<double>().value();
+    ArrayView<double> e = TreeReader::make(pkt)->read().get_array<double>().value();
     XPUTE_CHECK(e.size() == 2 && e[0] == 0.5 && e[1] == -4.0);
 }

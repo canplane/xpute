@@ -5,8 +5,8 @@
 #include <vector>
 
 #include "xpute/kit/codec/encoding.hpp"
-#include "xpute/kit/golden.hpp"
-#include "xpute/kit/test.hpp"
+#include "dev/test/golden.hpp"
+#include "dev/test/test.hpp"
 #include "cursor.hpp"
 #include "encode.hpp"
 
@@ -21,8 +21,8 @@ std::string hex(std::span<const std::uint8_t> bytes) {
     return out;
 }
 
-// The packet `build` writes as its root, in hex, or the errno it was refused
-// with.
+// This answers the packet `build` writes as its root, in hex, or the errno it
+// was refused with.
 template <class F> std::string encode(F &&build, std::size_t cap = 1024) {
     std::vector<std::uint8_t> buf(cap, 0xff);
     PacketWriter w(buf);
@@ -41,14 +41,14 @@ std::vector<std::uint8_t> bytes(const std::string &hex_text) {
 } // namespace
 
 XPUTE_TEST(xtp_writer_matches_other_languages) {
-    Golden v = Golden::load("spec/golden/wire/xtp/encode.tsv");
+    Golden v = Golden::load("kit/spec/golden/wire/xtp/encode.tsv");
     auto check = [&v](const char *name, auto &&build) {
         std::string k;
         v.each("", [&](const std::string &j) {
             if (v.s(j + ".name") == name) k = j;
         });
         XPUTE_CHECK(!k.empty());
-        XPUTE_CHECK_EQ(encode(build), v.s(k + ".packet"), name);
+        XPUTE_CHECK_EQ(encode(build), v.s(k + ".pkt"), name);
     };
     check("nil", [](PacketWriter &w) { w.nil(); });
     check("i32", [](PacketWriter &w) { w.i32(42); });
@@ -59,9 +59,9 @@ XPUTE_TEST(xtp_writer_matches_other_languages) {
     check("str", [](PacketWriter &w) { w.str("héllo"); });
     check("str empty", [](PacketWriter &w) { w.str(""); });
     const std::array<std::uint16_t, 3> u16s{1, 2, 3};
-    check("typed u16", [&](PacketWriter &w) { w.u16_array(u16s); });
+    check("typed u16", [&](PacketWriter &w) { w.array<std::uint16_t>(u16s); });
     const std::array<float, 2> f32s{0.5f, -2.0f};
-    check("typed f32", [&](PacketWriter &w) { w.f32_array(f32s); });
+    check("typed f32", [&](PacketWriter &w) { w.array<float>(f32s); });
     const std::array<std::uint8_t, 9> bits{1, 0, 1, 1, 0, 0, 0, 0, 1};
     check("bitset", [&](PacketWriter &w) { w.bitset(bits); });
     const std::array<std::string_view, 3> strs{"a", "héllo", ""};
@@ -71,7 +71,7 @@ XPUTE_TEST(xtp_writer_matches_other_languages) {
         w.branch(7, [&](PacketWriter &b) {
             b.i32(42).str("hello").boolean(true).nil().i64(std::int64_t{1} << 40);
             b.branch(2, [](PacketWriter &b) { b.i32(1).i32(2); });
-            b.i32_array(seven);
+            b.array<std::int32_t>(seven);
         });
     });
     check("branch null child", [](PacketWriter &w) {
@@ -94,8 +94,9 @@ XPUTE_TEST(xtp_overflow_spoils_pkt) {
     XPUTE_CHECK_EQ(encode([&bad](PacketWriter &w) { w.graft(bad); }), std::string("errno:-74"), "a graft of what is no packet");
 }
 
-// A branch ends on a word, so a byte after it lies where the tree encoder
-// lays it rather than right after the branch's last child.
+// A branch's extent ends on a word boundary, so a byte after it starts on the
+// next word, where the other languages put it, and not right after the
+// branch's last child.
 XPUTE_TEST(xtp_node_after_branch_aligned) {
     std::vector<std::uint8_t> pkt = bytes(encode([](PacketWriter &w) {
         w.branch(2, [](PacketWriter &b) {
@@ -107,7 +108,9 @@ XPUTE_TEST(xtp_node_after_branch_aligned) {
     XPUTE_CHECK(root.ok());
     Result<Cursor> after = root->at(1);
     XPUTE_CHECK(after.ok() && after->get_number().value() == 2);
-    // The inner branch at 16 + 24, its table one word, its byte at 56; the
-    // next byte on the word after it.
+    // The outer branch starts at 16, and its count and two entries take 24
+    // bytes, so the inner branch starts at 40. The inner count and one entry
+    // end at 56, where the inner byte goes. The outer branch's second byte then
+    // starts on the next word, 64, not at 57.
     XPUTE_CHECK_EQ(std::get<0>(get_word(pkt, HDR_SZ + WORD_SZ * 2)) + root->base(), 64u, "the byte's place");
 }

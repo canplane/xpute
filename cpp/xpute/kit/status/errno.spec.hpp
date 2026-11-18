@@ -1,6 +1,6 @@
 // cpp/xpute/kit/status/errno.spec.hpp
 //
-// GENERATED from spec/status/errno.json
+// GENERATED from kit/spec/errno.json5 (xpute-gen data.rs)
 //
 // POSIX/Linux-aligned negative errno
 
@@ -9,153 +9,120 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
-#include <utility>
 
 namespace xpute {
 
-enum class Errno : std::int32_t {
-    ok = 0, // Success
-
-    // ---- Generic ----
-    eperm = -1, // Operation not permitted
-    enoent = -2, // No such file or directory / entry not found
-    esrch = -3, // No such process
-    eintr = -4, // Interrupted system call
-    eio = -5, // I/O error
-    enxio = -6, // No such device or address
-    e2big = -7, // Argument list too long / object too large for fixed local cap
-    enoexec = -8, // Exec format error
-    ebadf = -9, // Bad file descriptor / bad handle
-    echild = -10, // No child processes
-    eagain = -11, // Try again / Resource temporarily unavailable
-    enomem = -12, // Out of memory
-    eacces = -13, // Permission denied
-    efault = -14, // Bad address
-    ebusy = -16, // Device or resource busy
-    eexist = -17, // File exists / duplicate bind
-    exdev = -18, // Cross-device link
-    enodev = -19, // No such device
-    enotdir = -20, // Not a directory
-    eisdir = -21, // Is a directory
-    einval = -22, // Invalid argument
-    enfile = -23, // File table overflow (system-wide)
-    emfile = -24, // Too many open files (process)
-    enotty = -25, // Not a tty
-    efbig = -27, // File too large / payload too large
-    enospc = -28, // No space left on device / local mailbox full
-    espipe = -29, // Illegal seek
-    erofs = -30, // Read-only file system
-    emlink = -31, // Too many links
-    epipe = -32, // Broken pipe
-    edom = -33, // Math argument out of domain
-    erange = -34, // Math result not representable
-    enosys = -38, // Function not implemented
-
-    // ---- Protocol / Message / Encoding ----
-    eproto = -71, // Protocol error
-    ebadmsg = -74, // Bad message (protocol/frame/payload invalid)
-    eoverflow = -75, // Value too large for target type / overflow
-    emsgsize = -90, // Message too long / packet too large
-    enotsup = -95, // Operation not supported
-    eilseq = -84, // Illegal byte sequence (decode/encoding failure)
-
-    // ---- Endpoint / Addressing ----
-    eaddrinuse = -98, // Address already in use
-    eaddrnotavail = -99, // Cannot assign requested address
-
-    // ---- Network / Transport (Linux asm-generic/errno.h aligned) ----
-    enetdown = -100, // Network is down
-    enetunreach = -101, // Network is unreachable
-    enetreset = -102, // Network dropped connection because of reset
-    econnaborted = -103, // Software caused connection abort
-    econnreset = -104, // Connection reset by peer
-    enobufs = -105, // No buffer space available
-    eisconn = -106, // Transport endpoint is already connected
-    enotconn = -107, // Transport endpoint is not connected
-    eshutdown = -108, // Cannot send after transport endpoint shutdown
-    etoomanyrefs = -109, // Too many references
-    etimedout = -110, // Connection timed out
-    econnrefused = -111, // Connection refused
-    ehostdown = -112, // Host is down
-    ehostunreach = -113, // No route to host
-    ealready = -114, // Operation already in progress
-    einprogress = -115, // Operation now in progress
-
-    // ---- Lifecycle / Cancellation ----
-    ecanceled = -125, // Operation canceled
-    enotrecoverable = -131, // State not recoverable: an invariant the code stands on does not hold
+// What an errno says happened: the canonical status code of gRPC and Abseil
+// (absl::StatusCode), by its number there, each errno's as Abseil's
+// ErrnoToStatusCode maps it, save that ENOTRECOVERABLE is internal, and
+// EBADMSG and EILSEQ data_loss. It says nothing of whether the error is
+// fatal: a broken invariant is a bug, which stops the program.
+enum class Kind : std::uint8_t {
+    ok = 0,
+    cancelled = 1,
+    unknown = 2,
+    invalid_argument = 3,
+    deadline_exceeded = 4,
+    not_found = 5,
+    already_exists = 6,
+    permission_denied = 7,
+    resource_exhausted = 8,
+    failed_precondition = 9,
+    out_of_range = 11,
+    unimplemented = 12,
+    internal = 13,
+    unavailable = 14,
+    data_loss = 15,
 };
 
-// An errno's name, as Rust's Display prints an error's.
-constexpr std::string_view errno_name(Errno e) noexcept {
-    switch (e) {
-    case Errno::ok: return "OK";
-    case Errno::eperm: return "EPERM";
-    case Errno::enoent: return "ENOENT";
-    case Errno::esrch: return "ESRCH";
-    case Errno::eintr: return "EINTR";
-    case Errno::eio: return "EIO";
-    case Errno::enxio: return "ENXIO";
-    case Errno::e2big: return "E2BIG";
-    case Errno::enoexec: return "ENOEXEC";
-    case Errno::ebadf: return "EBADF";
-    case Errno::echild: return "ECHILD";
-    case Errno::eagain: return "EAGAIN";
-    case Errno::enomem: return "ENOMEM";
-    case Errno::eacces: return "EACCES";
-    case Errno::efault: return "EFAULT";
-    case Errno::ebusy: return "EBUSY";
-    case Errno::eexist: return "EEXIST";
-    case Errno::exdev: return "EXDEV";
-    case Errno::enodev: return "ENODEV";
-    case Errno::enotdir: return "ENOTDIR";
-    case Errno::eisdir: return "EISDIR";
-    case Errno::einval: return "EINVAL";
-    case Errno::enfile: return "ENFILE";
-    case Errno::emfile: return "EMFILE";
-    case Errno::enotty: return "ENOTTY";
-    case Errno::efbig: return "EFBIG";
-    case Errno::enospc: return "ENOSPC";
-    case Errno::espipe: return "ESPIPE";
-    case Errno::erofs: return "EROFS";
-    case Errno::emlink: return "EMLINK";
-    case Errno::epipe: return "EPIPE";
-    case Errno::edom: return "EDOM";
-    case Errno::erange: return "ERANGE";
-    case Errno::enosys: return "ENOSYS";
-    case Errno::eproto: return "EPROTO";
-    case Errno::ebadmsg: return "EBADMSG";
-    case Errno::eoverflow: return "EOVERFLOW";
-    case Errno::emsgsize: return "EMSGSIZE";
-    case Errno::enotsup: return "ENOTSUP";
-    case Errno::eilseq: return "EILSEQ";
-    case Errno::eaddrinuse: return "EADDRINUSE";
-    case Errno::eaddrnotavail: return "EADDRNOTAVAIL";
-    case Errno::enetdown: return "ENETDOWN";
-    case Errno::enetunreach: return "ENETUNREACH";
-    case Errno::enetreset: return "ENETRESET";
-    case Errno::econnaborted: return "ECONNABORTED";
-    case Errno::econnreset: return "ECONNRESET";
-    case Errno::enobufs: return "ENOBUFS";
-    case Errno::eisconn: return "EISCONN";
-    case Errno::enotconn: return "ENOTCONN";
-    case Errno::eshutdown: return "ESHUTDOWN";
-    case Errno::etoomanyrefs: return "ETOOMANYREFS";
-    case Errno::etimedout: return "ETIMEDOUT";
-    case Errno::econnrefused: return "ECONNREFUSED";
-    case Errno::ehostdown: return "EHOSTDOWN";
-    case Errno::ehostunreach: return "EHOSTUNREACH";
-    case Errno::ealready: return "EALREADY";
-    case Errno::einprogress: return "EINPROGRESS";
-    case Errno::ecanceled: return "ECANCELED";
-    case Errno::enotrecoverable: return "ENOTRECOVERABLE";
+// The member `val` is, or none for a number no member has.
+constexpr std::optional<Kind> of_Kind(std::uint8_t val) noexcept {
+    switch (val) {
+    case 0: return Kind::ok;
+    case 1: return Kind::cancelled;
+    case 2: return Kind::unknown;
+    case 3: return Kind::invalid_argument;
+    case 4: return Kind::deadline_exceeded;
+    case 5: return Kind::not_found;
+    case 6: return Kind::already_exists;
+    case 7: return Kind::permission_denied;
+    case 8: return Kind::resource_exhausted;
+    case 9: return Kind::failed_precondition;
+    case 11: return Kind::out_of_range;
+    case 12: return Kind::unimplemented;
+    case 13: return Kind::internal;
+    case 14: return Kind::unavailable;
+    case 15: return Kind::data_loss;
     }
-    return "errno";
+    return std::nullopt;
 }
 
-// The member `code` is, none for a number no member has.
-constexpr std::optional<Errno> errno_of(std::int32_t code) noexcept {
-    switch (code) {
+enum class Errno : std::int32_t {
+    ok = 0,
+    eperm = -1,
+    enoent = -2,
+    esrch = -3,
+    eintr = -4,
+    eio = -5,
+    enxio = -6,
+    e2big = -7,
+    enoexec = -8,
+    ebadf = -9,
+    echild = -10,
+    eagain = -11,
+    enomem = -12,
+    eacces = -13,
+    efault = -14,
+    ebusy = -16,
+    eexist = -17,
+    exdev = -18,
+    enodev = -19,
+    enotdir = -20,
+    eisdir = -21,
+    einval = -22,
+    enfile = -23,
+    emfile = -24,
+    enotty = -25,
+    efbig = -27,
+    enospc = -28,
+    espipe = -29,
+    erofs = -30,
+    emlink = -31,
+    epipe = -32,
+    edom = -33,
+    erange = -34,
+    enosys = -38,
+    eproto = -71,
+    ebadmsg = -74,
+    eoverflow = -75,
+    emsgsize = -90,
+    enotsup = -95,
+    eilseq = -84,
+    eaddrinuse = -98,
+    eaddrnotavail = -99,
+    enetdown = -100,
+    enetunreach = -101,
+    enetreset = -102,
+    econnaborted = -103,
+    econnreset = -104,
+    enobufs = -105,
+    eisconn = -106,
+    enotconn = -107,
+    eshutdown = -108,
+    etoomanyrefs = -109,
+    etimedout = -110,
+    econnrefused = -111,
+    ehostdown = -112,
+    ehostunreach = -113,
+    ealready = -114,
+    einprogress = -115,
+    ecanceled = -125,
+    enotrecoverable = -131,
+};
+
+// The member `val` is, or none for a number no member has.
+constexpr std::optional<Errno> of_Errno(std::int32_t val) noexcept {
+    switch (val) {
     case 0: return Errno::ok;
     case -1: return Errno::eperm;
     case -2: return Errno::enoent;
@@ -220,8 +187,138 @@ constexpr std::optional<Errno> errno_of(std::int32_t code) noexcept {
     return std::nullopt;
 }
 
-// A result as a pair, as Rust's ErrnoResult is: the errno, and the value
-// where there is one.
-template <class T> using ErrnoResult = std::pair<Errno, std::optional<T>>;
+// The member's `kind`.
+constexpr Kind kind_Errno(Errno val) noexcept {
+    switch (val) {
+    case Errno::ok: return Kind::ok;
+    case Errno::eperm: return Kind::permission_denied;
+    case Errno::enoent: return Kind::not_found;
+    case Errno::esrch: return Kind::not_found;
+    case Errno::eintr: return Kind::unavailable;
+    case Errno::eio: return Kind::unknown;
+    case Errno::enxio: return Kind::not_found;
+    case Errno::e2big: return Kind::invalid_argument;
+    case Errno::enoexec: return Kind::unknown;
+    case Errno::ebadf: return Kind::failed_precondition;
+    case Errno::echild: return Kind::failed_precondition;
+    case Errno::eagain: return Kind::unavailable;
+    case Errno::enomem: return Kind::resource_exhausted;
+    case Errno::eacces: return Kind::permission_denied;
+    case Errno::efault: return Kind::invalid_argument;
+    case Errno::ebusy: return Kind::failed_precondition;
+    case Errno::eexist: return Kind::already_exists;
+    case Errno::exdev: return Kind::unimplemented;
+    case Errno::enodev: return Kind::not_found;
+    case Errno::enotdir: return Kind::failed_precondition;
+    case Errno::eisdir: return Kind::failed_precondition;
+    case Errno::einval: return Kind::invalid_argument;
+    case Errno::enfile: return Kind::resource_exhausted;
+    case Errno::emfile: return Kind::resource_exhausted;
+    case Errno::enotty: return Kind::invalid_argument;
+    case Errno::efbig: return Kind::out_of_range;
+    case Errno::enospc: return Kind::resource_exhausted;
+    case Errno::espipe: return Kind::invalid_argument;
+    case Errno::erofs: return Kind::permission_denied;
+    case Errno::emlink: return Kind::resource_exhausted;
+    case Errno::epipe: return Kind::failed_precondition;
+    case Errno::edom: return Kind::invalid_argument;
+    case Errno::erange: return Kind::out_of_range;
+    case Errno::enosys: return Kind::unimplemented;
+    case Errno::eproto: return Kind::unknown;
+    case Errno::ebadmsg: return Kind::data_loss;
+    case Errno::eoverflow: return Kind::out_of_range;
+    case Errno::emsgsize: return Kind::unknown;
+    case Errno::enotsup: return Kind::unimplemented;
+    case Errno::eilseq: return Kind::data_loss;
+    case Errno::eaddrinuse: return Kind::failed_precondition;
+    case Errno::eaddrnotavail: return Kind::already_exists;
+    case Errno::enetdown: return Kind::unavailable;
+    case Errno::enetunreach: return Kind::unavailable;
+    case Errno::enetreset: return Kind::unavailable;
+    case Errno::econnaborted: return Kind::unavailable;
+    case Errno::econnreset: return Kind::unavailable;
+    case Errno::enobufs: return Kind::resource_exhausted;
+    case Errno::eisconn: return Kind::failed_precondition;
+    case Errno::enotconn: return Kind::failed_precondition;
+    case Errno::eshutdown: return Kind::failed_precondition;
+    case Errno::etoomanyrefs: return Kind::unknown;
+    case Errno::etimedout: return Kind::deadline_exceeded;
+    case Errno::econnrefused: return Kind::unavailable;
+    case Errno::ehostdown: return Kind::unavailable;
+    case Errno::ehostunreach: return Kind::unavailable;
+    case Errno::ealready: return Kind::already_exists;
+    case Errno::einprogress: return Kind::unknown;
+    case Errno::ecanceled: return Kind::cancelled;
+    case Errno::enotrecoverable: return Kind::internal;
+    }
+    __builtin_unreachable();
+}
+
+// The member's `text`.
+constexpr std::string_view text_Errno(Errno val) noexcept {
+    switch (val) {
+    case Errno::ok: return "Success";
+    case Errno::eperm: return "Operation not permitted";
+    case Errno::enoent: return "No such file or directory / entry not found";
+    case Errno::esrch: return "No such process";
+    case Errno::eintr: return "Interrupted system call";
+    case Errno::eio: return "I/O error";
+    case Errno::enxio: return "No such device or address";
+    case Errno::e2big: return "Argument list too long / object too large for fixed local cap";
+    case Errno::enoexec: return "Exec format error";
+    case Errno::ebadf: return "Bad file descriptor / bad handle";
+    case Errno::echild: return "No child processes";
+    case Errno::eagain: return "Try again / Resource temporarily unavailable";
+    case Errno::enomem: return "Out of memory";
+    case Errno::eacces: return "Permission denied";
+    case Errno::efault: return "Bad address";
+    case Errno::ebusy: return "Device or resource busy";
+    case Errno::eexist: return "File exists / duplicate bind";
+    case Errno::exdev: return "Cross-device link";
+    case Errno::enodev: return "No such device";
+    case Errno::enotdir: return "Not a directory";
+    case Errno::eisdir: return "Is a directory";
+    case Errno::einval: return "Invalid argument";
+    case Errno::enfile: return "File table overflow (system-wide)";
+    case Errno::emfile: return "Too many open files (process)";
+    case Errno::enotty: return "Not a tty";
+    case Errno::efbig: return "File too large / payload too large";
+    case Errno::enospc: return "No space left on device / local mailbox full";
+    case Errno::espipe: return "Illegal seek";
+    case Errno::erofs: return "Read-only file system";
+    case Errno::emlink: return "Too many links";
+    case Errno::epipe: return "Broken pipe";
+    case Errno::edom: return "Math argument out of domain";
+    case Errno::erange: return "Math result not representable";
+    case Errno::enosys: return "Function not implemented";
+    case Errno::eproto: return "Protocol error";
+    case Errno::ebadmsg: return "Bad message (protocol/frame/payload invalid)";
+    case Errno::eoverflow: return "Value too large for target type / overflow";
+    case Errno::emsgsize: return "Message too long / packet too large";
+    case Errno::enotsup: return "Operation not supported";
+    case Errno::eilseq: return "Illegal byte sequence (decode/encoding failure)";
+    case Errno::eaddrinuse: return "Address already in use";
+    case Errno::eaddrnotavail: return "Cannot assign requested address";
+    case Errno::enetdown: return "Network is down";
+    case Errno::enetunreach: return "Network is unreachable";
+    case Errno::enetreset: return "Network dropped connection because of reset";
+    case Errno::econnaborted: return "Software caused connection abort";
+    case Errno::econnreset: return "Connection reset by peer";
+    case Errno::enobufs: return "No buffer space available";
+    case Errno::eisconn: return "Transport endpoint is already connected";
+    case Errno::enotconn: return "Transport endpoint is not connected";
+    case Errno::eshutdown: return "Cannot send after transport endpoint shutdown";
+    case Errno::etoomanyrefs: return "Too many references";
+    case Errno::etimedout: return "Connection timed out";
+    case Errno::econnrefused: return "Connection refused";
+    case Errno::ehostdown: return "Host is down";
+    case Errno::ehostunreach: return "No route to host";
+    case Errno::ealready: return "Operation already in progress";
+    case Errno::einprogress: return "Operation now in progress";
+    case Errno::ecanceled: return "Operation canceled";
+    case Errno::enotrecoverable: return "State not recoverable: an invariant the code stands on does not hold";
+    }
+    __builtin_unreachable();
+}
 
 } // namespace xpute

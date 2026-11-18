@@ -1,714 +1,257 @@
 # Architecture — xpute
 
-[xpute](./README.md) runs one program inside another, gives it resources, and
-leaves the abstractions over them to it. The outer program, the **host**, owns
-the platform: the clock, the memory, whatever reaches outside. The inner one,
-the **guest**, owns none of it. The host grants a fixed memory once, and runs
-the guest in **turns**, each one call into it with a quota of time; it hands on
-what the guest asks of the outside: a file's open, and the commit of one
-written, to the program; a GPU call to a device. Over those grants the guest
-builds what it needs — an allocator, a scheduler, tables of what it holds — and
-the policy each runs by.
-
-The host/guest split follows the exokernel/library-OS division: the host grants
-real resources, a real region and a real quota, and the guest builds its own
-abstractions over them; nothing is virtualized. xpute does not enforce those
-grants.
-
-xpute comes in two layers. `kit` is generic code — collections, codecs, a wire
-format, an errno table, scalar math — that any program can link and call.
-`guest` and `host` are the arrangement itself, one end each, written against
-`kit`, which knows nothing of them. Neither layer knows what a guest computes.
-
-Three things cross between the ends and nothing else does: one memory they
-share, one call in, one number out. Two calls go the other way, each answered
-before it returns: the host's clock, and a hostcall run now, a question the host
-answers from what it already holds (both below). The sections follow from that:
-
-1. the memory;
-2. what is written into it — one shape for every message, its data, and the
-   queues that carry it each way;
-3. the call that makes it run, the turn;
-4. handles, which name objects across the boundary;
-5. hostcalls and files, and a GPU's calls, which a guest asks of its host;
-6. the contract all of it comes down to;
-7. the languages, and the records that hold them to each other.
+[xpute](./README.md) claims that a program's compiled **guest** and the **host**
+that implements its imports need share nothing but the guest's memory and one
+kind of message laid in it. This document follows that claim through the parts
+that make it hold, in the order they depend on each other, across xpute's three
+parts: the guest, the host and the link between them, which WIT draws; the
+runtime, the platform's environment that runs them; and the kit beneath both.
+The **link** carries every call as a frame. The **sides** run the link alike on
+every platform, each end over a transport its runtime plugs in, and a runtime
+carries a UI on another thread to the guest's end. A failure is its call's to
+judge, and a bug ends in a stop, after which the link answers what was owed, so
+that no side waits on an answer that will not come. And the three languages hold
+the same facts: a spec or WIT owns each one and a generator writes it into each,
+and frozen records hold the rest of their code to each other. The layouts are
+written once in `spec/` and the interfaces in WIT, and this document points
+there.
 
 ---
 
-## The core memory, placed once
+## The link
 
-The memory is the one thing the two ends share. It is the **core memory**, core
-as in a core dump. The host reserves it at boot and it never grows, so a view
-into it stays valid for as long as the guest lives: a queue keeps its words at a
-fixed address, and a payload is read where it lies. A page reserves it as a
-`WebAssembly.Memory` whose initial size is its maximum
-(`@xpute/host/mem/reserve.ts` `reserve_mem`); a native program that links its
-guest in maps it from the system, and the guest's own thread then sets its base
-(`xpute-host/native.rs` `boot`, `xpute-guest/mem.rs` `set`).
+A frame is four words and a packet (`link/spec/frame.json5`): TAG, the request;
+CMD, the handle of the object called and the method's place in its interface,
+with a RES bit that marks an answer; RESULT, the answer's status alone, 0 or a
+negative errno; and PKT, the packet's length. The guest has three exports:
+`link_init`, which lays its link and answers where the link lies; `link_boot`,
+its first entry, which mounts its implementations; and `link_in`, which enters
+it with a frame the host laid in its inbox, a request or an answer. Out of the
+guest goes one function, `link_out`, the same on every platform, which takes a
+frame the guest laid in its outbox. Each crossing returns at once what the
+method came to.
 
-The memory need not begin at address zero. A WebAssembly module's does; a guest
-linked into a native program has its memory wherever the system put it. So every
-address a guest names is an offset from the memory's base, never a pointer
-(`mem`, `Memory`). It means the same to the host however the guest is built, and
-it crosses as a `u32` however wide the machine's pointers are. A part laid over
-a region takes the `Memory` it lies in and its offset, so a test lays it over a
-buffer of its own; a program reading its own data goes through the guest's own
-memory, set once (`core`, `at`).
+Whatever is called is an object under a handle. A singleton interface is a
+**named handle**, the hash of its package and name, called with no open. An
+object of which there are many, a file or a surface, is opened by a **URI**, a
+tuple of tokens, through the root's `open`, which the implementing side answers
+from the opener mounted at the longest matching prefix. The implementing side is
+polymorphic behind the handle, so the caller never branches on what it calls.
 
-What goes in the memory is the guest's, and so is where. It lays ranges end to
-end on a unit it chooses (`mem/section`), as a linker script places output
-sections without knowing what they hold, and whatever is asked of a range is
-checked against its end (`Section::at`, `nth`); a range sized at compile time is
-handed to its owner once at boot and read as an array laid in it (`mem/range`
-`OwnedRange`, `arr`). The host is told where the parts
-it reads lie by a **toc**, a table of contents as a CD's tells where each track
-begins (`ipc/toc`, `spec/ipc/toc.json`), which the guest writes in its first
-turn, or in a boot call that returns its offset; the host learns that one offset
-from outside and finds everything else from there (`@xpute/host/ipc/toc.ts`
-`Toc`). xpute numbers a key for each part of its own — the two queues and the
-hostcall stream the sections below describe — and a program numbers its own keys
-with the `PROGRAM` bit set.
+A packet holds the args, or an answer's value, in the Component Model's
+Canonical ABI layout, with four departures. A pointer is an offset into the
+packet, which is the one copy. A buffer the caller lends, WIT's `lent`
+(`link/wit/types.wit`), stays where it lies and is the callee's until the
+answer; its address is a u64 on every platform, an offset into a module's
+memory or a pointer natively, so a packet has one layout everywhere. A packet
+that does not hold what its type says is refused, EBADMSG,
+where the ABI traps. And RESULT is status alone, the value in the packet. What
+of WIT the link takes, and what it reads its own way, is the generator's to
+list ([link/gen](./link/gen/README.md)).
 
-```text
-one guest's layout; the order of its ranges is the guest's, the heap last
+A `func` answers at once, and is called. An `async func` answers later, and is
+sent: the crossing answers EINPROGRESS, and the callee answers later by a
+frame marked RES with the request's tag. The guest is entered one entry at a
+time, and an answer is never run inside the `send` that asked for it. The
+guest runs only when it is entered, by a request, an answer, or the answer of
+what it armed; when it runs is the program's.
 
- 0 ┌─────────────────────────────────┐
-   │ a module's stack and data       │
-   ├─────────────────────────────────┤ ◀── the one offset the host learns
-   │ toc                             │
-   │   MAGIC · VERSION · count · 0   │
-   │   SQ  · offset ─────────────────┼──┐
-   │   CQ  · offset ─────────────────┼──┼──┐
-   │   SYS · offset ─────────────────┼──┼──┼──┐
-   │   PROGRAM | n · value           │  │  │  │
-   ├─────────────────────────────────┤  │  │  │
-   │ submission ring · its slots     │◀─┘  │  │
-   ├─────────────────────────────────┤     │  │
-   │ completion ring · its slots     │◀────┘  │
-   ├─────────────────────────────────┤        │
-   │ hostcall stream                 │◀───────┘
-   ├─────────────────────────────────┤
-   │ the guest's own ranges          │
-   ├─────────────────────────────────┤
-   │ heap, to the memory's end       │
-   └─────────────────────────────────┘
-```
+## The sides
 
-The heap is reached through a single call (`mem/heap`) whose answer is the
-guest's choice. `kit` offers two allocators that fit together: a buddy allocator
-of fixed pages (`alloc/buddy_tree`), ported from evanw/buddy-malloc, and a slab
-of size classes over it (`alloc/slab`), which keeps its bookkeeping inside the
-blocks it has not handed out.
+An end of the link is a **`Side`**, the same machine in Rust, TypeScript and
+C++: it lays frames in its own box, crosses by its own function, answers by what
+is mounted on it and hears the answers to what it sent. The guest holds one over
+its outbox, and the host one over the guest's inbox. TypeScript names apart the
+part every end runs alike, `End`: the handle table, the requests pending by tag,
+the dispatch to an object by its handle, the later answers, the cancels and the
+drops; a `Side` is an `End` over the guest's boxes.
 
----
+What runs beside the guest is split the same way everywhere, and every
+dependency points down: a part declares the interface it needs, and a part above
+implements it and injects it. The **host** is the guest's counterpart: the
+host's end of the link, the bindings mounted there, and xpute's own
+implementations, the clocks, the stop and the log. It varies by language, as the
+guest does, and names no runtime. The **runtime** is the platform's environment,
+the web worker or the native guest thread. It instantiates or links the guest,
+makes the host's `Side`, injects into the host what the host needs of it (where
+a stop is reported and where a log record is written, and natively the way back
+to the guest's thread and the timers there) and runs the loop that enters the
+guest. Nothing names a runtime but its own UI end and the
+program's assembly. A program may bring plugins of its own, a GPU for one, each
+beside the runtime as its own guest's end and host, and neither names the other.
+The program starts its guest with a `Boot`, which lists its mounts, the host's
+among them, each a `Mount` that mounts the implementations of some of the
+guest's imports, in no order, since none depends on another, and its runtime
+runs the steps in their order, on both platforms alike: it runs each mount,
+stands in for the UI, enters the guest only once every interface the guest's
+world imports is mounted, and natively runs the loop.
 
-## The frame, and the packet it carries
+An end of the link is one machine whatever carries its frames. What carries
+them is the **transport**, which the runtime plugs in: the guest's boxes and
+the crossing into it, in the guest's memory, which both ends share.
 
-Sharing a memory does not say what a submission or its reply looks like, so
-xpute gives every message between the ends one shape, the **frame**, of four
-words (`ipc/frame`, `spec/ipc/frame.json`):
+The UI calls the guest's exports and implements some of its imports by the same
+WIT and the same generated bindings as any end, which call by a `Sender` and
+implement by a `Callee`, and never know which thread they run on. A UI on
+another thread than the guest's, a page's main thread to the guest's worker or
+the native JavaScript thread to the guest's thread, is across a second boundary,
+copied, which the runtime alone carries, by its shell's convention: messages
+over the web's MessagePort, the module's functions and events over the native C
+ABI. The runtime holds both halves of that crossing. On the guest's thread it
+stands in for the UI on the guest's end: a stand-in under each named handle the
+UI implements and an opener at each prefix it implements, each method sent
+across and answered later by its tag. On the UI's thread, its UI end is an `End`
+over the runtime's own transport, the web's port or the native module, so the
+bindings call and implement there as on any end. One thread cannot wait on the
+other, so every method the UI implements is an `async func`, and the runtime
+refuses to start the guest where a function without `async` (the bindings'
+`CALLS`) is one the UI implements, as it refuses an import with no
+implementation. The guest's open of an object the UI implements is answered at
+once on the guest's end, pipelined, so that end issues its handle, and the
+runtime tells the UI end the handle and the prefix that matched, whose opener
+the UI end runs. The guest's cancel of a method and its drop of an object cross
+as the runtime's own messages. Handing an object beside a call, a canvas, is a
+property of a crossing that can move one, the web's port.
 
-- `tag`, the port at the guest's far side, and an id;
-- `cmd`, what is asked, in the low 16 bits, with flags in the high 16;
-- `result`, what came back, a value or `-errno`;
-- where its **packet** lies — the data the frame carries — or 0 for none.
+The UI's connection is the runtime's, and an object like any other: the native
+runtime attaches a UI under a handle of its own, everything the UI sends and
+takes names that handle, and the UI leaves when the handle is dropped, which
+drops on the guest's end what it opened and answers ECANCELED what it owed. The
+guest is told only that a UI attached (`xpute:life` `attached`); the WIT
+between it and the UI does not change. The native runtime outlives its UI, so a
+reload opens a new handle on the same runtime and drops the old one, and the
+runtime keeps the guest's end, its last stop and its trap, which a new UI reads
+as it begins to hear them. The web worker dies with its page, so a reloaded
+page meets a new runtime.
 
-An errno is one table's (`spec/status/errno.json`), and every language reads a
-code back into its member, or into none (`Errno::of` in Rust, `errno_of` in the
-others). A command is `major << 8 | minor` (`kit` `abi/cmd`).
+## How a failure ends
 
-Every frame names a **port**, in its tag's high bits: who sent a frame the guest
-takes, who is to have one the guest posts. A reply keeps its submission's tag,
-so it goes back to its sender. The host is port 0, and what it sends is xpute's
-own (`spec/abi/cmd.json`); every other number is the program's, which gives each
-its meaning and numbers its commands as it likes. The host hands a frame to the
-port it names where one is attached and drops it where none is, as a datagram
-goes to the UDP port it names; the ports are the program's ABI, as UDP's
-well-known ones are a convention.
+A failure is one error, `XputeError`, carrying an errno
+(`kit/spec/errno.json5`). What happened is its errno's kind, the gRPC and
+Abseil status code. The kind says nothing of whether the failure is fatal:
+that is the call's. A caller that holds a failure impossible makes it a
+**bug** (`bug` and `or_bug`), reported with its errno, its place, two numbers
+and an optional message before it stops.
 
-Where what answers a port runs is the program's choice. What runs on the
-guest's thread (the doorbell, the rings, the hostcalls, the GPU host, and any
-port answered there) takes turns with the guest and reads its memory in place,
-at any address a call answers or a packet names; a call answered before it
-returns (`call`) is made only there.
+Between xpute's parts a failure moves as an `XputeError` with its optional
+message, an end as a stop or a trap report, the stop with the bug's optional
+message or that of a panic the language raised, and what is worth telling and
+is neither as a log record, a level, a context and a message (`wit/log`, in
+`wasi:logging`'s shape). Each end has its `log`: the guest's calls the import,
+and the host implements it and hands the records, with its own, to the log its
+runtime injects. The runtime alone writes them, every one, to the platform's
+output: its error stream, Android's log at the level's priority, or the
+browser's console by the level's method. The native UI end hands it the UI's
+records to write the same way (`log`); the web worker tells the page each
+record it writes, which the page does not write again.
 
-Two flags decide what a frame means. `ACKREQ`, set by whoever submits, asks for
-a reply. `RES`, set by whoever completes, says the frame is a reply. A
-completion without `RES` is an **event**, one the guest raised on its own, for
-the port it names, as an NVMe controller posts an asynchronous event to its
-completion queue.
+A guest's bug is reported through `stop`, and the guest traps. A host's own
+failure is a stop on both platforms too, reported the same way, and then the
+link traps, so no answer the host owed leaves the guest waiting. It is handed
+off one of two ways: synchronously, caught at `link_out` while the host answers
+the guest, or asynchronously, by the platform's listener for what the worker
+leaves uncaught, or by Rust's panic hook. A trapped guest is entered no more,
+and a frame to it answers EPIPE, a request already pending on it too, once. The
+app hears the trap with what stopped it, alike on both platforms, the imports
+with no implementation among them where the runtime refused to start the guest.
 
-Every packet has the same shape, **XTP**, the Xpute Tree Packet (`kit`
-`wire/xtp`). One decision explains the rest of it: nothing inside a packet
-records where the packet is. Every offset is counted from the branch that holds
-it, so the same bytes mean the same thing at any address.
+## The languages, held to each other
 
-```text
-one branch at byte 0, three children, each offset measured from that base
+xpute is written in TypeScript, Rust and C++. What the golden records hold is
+the same in each: the wire formats (TLV and XTP), scalar math and the seeded
+streams, the deque and the heap, the JSON texts a reader accepts (TypeScript's
+being its runtime's `JSON.parse`), and the link's frame and packet layout. The
+errno table is the same by its spec, and the link's `Side` is one machine in
+all three. The rest of the kit is
+each language's own: TypeScript has no allocator, and Rust no text encoding or
+hash codec. The guest exists in Rust and in C++ from the same WIT; the hosts are
+TypeScript's on the web and Rust's natively. Where the C++ differs, the
+language is the reason: RAII, templates and results, with no exceptions and no
+RTTI.
 
-            ┌──────────────────────────────────────────────┐
-  byte   0  │ len = 3          │ reserved                  │
-  byte   8  │   child A  ──▶ +32 ──────┐  u32              │
-  byte  16  │   child B  ──▶ +40 ──────┼──────┐  f32 seq   │
-  byte  24  │   child C  ──▶ +560 ─────┼──────┼───────┐    │
-            ├──────────────────────────┼──────┼───────┼────┤
-  byte  32  │ u32, the value itself   ◀┘      │       │    │
-  byte  40  │ len = 128        │ reserved    ◀┘       │    │
-  byte  48  │   512 bytes of f32 payload              │    │
-  byte 560  │ branch: 2 children                     ◀┘    │
-            └──────────────────────────────────────────────┘
-```
+A fact that crosses languages has one owner, a spec or WIT, and a generator
+writes it into every language that holds it: `xpute-gen` the data specs, and
+`xpute-link-gen` the link's bindings, each README saying how. What crosses
+between two languages is a frame, its packet the Canonical ABI's; XTP, the kit's
+tree packet, is the format of data a program stores and serves.
 
-Three things follow. A payload is read where it lies, in whatever memory holds
-it. A typed-array leaf is handed out as a view straight into the packet. And a
-packet encoded earlier grafts into a larger one without a number inside it
-changing. The format in full is [the note beside the TypeScript
-implementation](./ts/kit/src/wire/xtp/README.md), which the other languages
-mirror.
+What holds the languages to each other is data. Under a part's
+`spec/golden/` are records each language reads bit for bit, so a difference
+means one side moved. A record is frozen: it is written again only when a
+contract changes on purpose, the packets' by a Rust test behind
+`XPUTE_GOLDEN_WRITE`. Every rounding in the tree is one rule, half to even as
+WGSL rounds (`math/scalar`), so the guest, the UI and a shader round alike;
+clippy refuses Rust's `round`, which rounds half away from zero.
 
-**TLV** (`kit` `wire/tlv`) is the other format: typed values in a forward-only
-sequence, closed by END. Where XTP is a value walked where it lies, a TLV is
-read once, in order. Both formats live in `kit`, since neither knows the program
-using it.
-
----
-
-## The rings, the doorbell and the door
-
-Frames need a queue each way that neither side has to lock, and the **ring**
-(`ipc/ring`, `spec/ipc/ring.json`) is that queue. It keeps the four-word frames
-in one place and the packets they point at in **slots**, one a frame, in a
-separate range of the memory, as virtio's descriptor table and AF_XDP's UMEM do:
-the frames are small and stay hot, the payloads are large and do not.
-
-```text
-frames                                       payloads, elsewhere in memory
-┌──────────────────────────────────────────┐  ┌────────┬────────┬───┬──────────┐
-│ header: cap · head · tail ·              │  │ slot 0 │ slot 1 │ … │ slot n-1 │
-│               ▲      ▲                   │  └────▲───┴────────┴───┴──────────┘
-│ consumer ─────┘      └───── producer     │       │
-│  one writer each, and no lock            │       │
-│       slot_bytes · slot_base · 3 reserved│       │
-├──────────────────────────────────────────┤       │
-│ frame n: tag                             │       │
-│          cmd (low 16) | flags (high 16)  │       │
-│          result (value or -errno)        │       │
-│          packet address ─────────────────┼───────┘  (slot n & (cap-1))
-└──────────────────────────────────────────┘
-```
-
-Positions only grow, so `tail - head` is how many frames wait. Frame _n_ owns
-slot _n_, so a slot is free exactly when its frame has been read, and nothing
-under the ring allocates. A push fails in two ways only. `EAGAIN` means the ring
-is full, and the producer waits. `EMSGSIZE` means the packet is bigger than a
-slot, and such a packet crosses by address, in a heap block.
-
-Two rings make a pair: the submission ring for what the host sends, and the
-completion ring for what the guest answers and raises, each where the toc says
-(`SQ`, `CQ`). The host drives the pair through the **doorbell**
-(`@xpute/host/ipc/doorbell.ts` `Doorbell`):
-
-- it writes each submission in place, into the submission ring's next slot,
-  tagged with the port that sends it (`writer`, `send`);
-- it rings the guest with a quota (`ring`), which is one whole turn;
-- it then reads the completion ring dry, handing each reply to the call waiting
-  for it and each event to the port it names, where one is attached
-  (`listen`).
-
-Two ways in sit on top of that. A question the host needs answered at once is a
-`call`: submitted with `ACKREQ` and rung with no quota until its reply comes
-back. A command from outside the host's own code, such as a developer's console,
-is `cmd`: its arguments become the packet's fields (`TreeView.set`), and it is
-sent and rung. A guest that traps is gone, and the doorbell rings it no more.
-
-The guest's end is the **door** (`ipc/door` `Door`). It applies the submissions
-in order, answers each, and posts what the guest raises into the completion
-ring, for the port it names (`raise`, or `raise_to` for an event its table
-generates, `Event`), which holds a whole turn's output.
-What the host sent it applies itself, and hands the program every other sender's
-and each open the host completed (`Submission`). A drain runs before any phase's budget, so the program records what it is handed
-and returns. Before each submission the door checks that the ring has room for
-the most one command may leave — its events, a bound the program gives
-(`most_events`), and its reply — and where it has not, it applies no more and
-leaves the rest for the next turn, in order.
+A GPU's floats are held only as far as WGSL holds them. Its division may be
+2.5 ulps off, its square root and transcendentals have only bounds, a GPU may
+be further off than that, and a compiler may fuse or reorder, so no order
+written in a shader holds. So a rule the CPU and a GPU both decide is decided
+in integers, or in floats the CPU rounded once and handed to the GPU in a
+word; and a rule the GPU alone decides is one function every pass calls.
 
 ---
 
-## The turn
-
-The turn is when the guest runs at all.
-
-It runs inside one call, `run(quota_ms)`, named as KVM's `KVM_RUN` is, the call
-that runs a guest until it gives the processor back; when that call returns the
-guest is not running. The call has two edges, like a clock's. On the **rising
-edge** the host calls in with a quota, and the guest drains the submission ring,
-does its work and posts what it has. On the **falling edge** it returns
-`wake_ms`, when it would like the next turn: `0` for the next the host can run,
-`n` for that many milliseconds, `NO_WAKE` for none. The host learns nothing else
-about what ran.
-
-xpute names that call, as a C runtime names the `main` it calls: the program
-implements it and never renames it (`xpute-guest/entry.rs` `run`). A guest
-built as a module exports `run`; a guest linked into a native program exports
-`xpute_run`, and its memory as `xpute_mem`, under xpute's name and no
-program's, since a process holds one guest, with one reservation
-(`xpute-host/native.rs`). What the guest's form hands it there is xpute's as
-well (`BootInfo`): the memory it was given, where its own ranges may begin, the
-host's clock, its hostcall and its heap's reading.
-
-On the host side, something has to decide when to ring at all. That is the
-**strobe** (`@xpute/host/sched/strobe.ts` `Strobe`), named for a circuit's
-strobe, the pulse that tells a receiver when to act. It rings only when the host
-or the guest's last falling edge asked for a turn, at the moment the scheduling
-policy below gives; a positive `wake_ms` sets a timer that asks for a turn when
-it fires. A guest that asks for nothing is rung for nothing. The doorbell rings
-too, with no quota: to make room in a full submission ring, to wait for a call's
-reply and to send a `cmd`; and whatever holds the doorbell may ring it.
-
-How long a turn may take, and how that time is spent, are settled at three
-levels, from the outside in.
-
-1. **The scheduling policy** (`@xpute/host/sched/policy.ts`
-   `SchedulingPolicy`) is the host's, and the program injects it, with its
-   numbers, when the host boots; xpute keeps none of its own. It is what the
-   strobe asks: it gives and admits the moment a turn may run, sets the quota, a
-   cooperative slice ended by the guest's return, and is handed what each turn
-   took; the doorbell's turns are outside it. A page's is **frame pacing**
-   (`sched/frame_pacing.ts`), named for Android's Frame Pacing library: turns a
-   whole number of the display's refreshes apart, each given what its frame
-   leaves. A host with no display gives each turn a fixed quota as soon as it is
-   asked (`sched/fixed_quota.ts`).
-2. **Tick** (`sched/tick`) is the guest's. It runs the program's phases, by
-   their place in its order, against one budget, the quota counted from the
-   rising edge. The program's policy gives each phase the share of the budget
-   held back from it for the phases after it (`held_back`), so a busy phase
-   cannot starve a later one; most hold back nothing. What the phases are
-   called, and what runs in each, are the program's. A phase's time is
-   recorded, never stopped.
-3. **Pass** (`sched/pass`) spends what is left of the budget on an ordered list
-   of steps until the budget or a step cap says stop. Both are waived until a
-   step has done work, so nothing starves behind what sits ahead of it. The hard
-   budget, what is left plus the tick's `hard_slack_ms`, is never waived, but
-   the first step is always tried.
-
-Work too long for one turn is a **task**, written against `sched/edge` in its
-language's form, a future or a coroutine. A task gets the turn's quota as a
-deadline, `yield_if_spent` to stop once the deadline has passed, and `next_turn`
-to wait for the next turn; the guest may move the deadline past the quota
-(`extend_to`). A parked task makes the falling edge 0. Whatever assembles the
-guest installs an executor (`sched/task`), marks the edges with `rise` and
-`fall`, and polls it between them.
-
-```text
-host · TypeScript                          guest
-─────────────────                          ─────
-
-strobe   a turn, and only when one
-         was asked for
-policy   the program's: the moment,
-         and the quota
-
-commands ─────── submission ring ───────▶  drained on the rising edge
-doorbell ═══════ run(quota_ms) ═════════▶  ┌ tick   phases in a fixed order
-                                           │ tasks  that yield when
-                                           │        the quota is spent
-                                           │ asks   what it wants done outside
-completions ◀───── completion ring ──────  └ posted before the falling edge
-         ◀═══════════ wake_ms ═══════════  next turn · in n ms · never
-
-requests what the turn asked for, run
-         before the next rising edge
-
-         … nothing until wake_ms …         … nothing at all …
-```
-
----
-
-## Handles
-
-A handle lets both sides name one object while only one side holds it.
-
-The side that keeps the object hands out a number for it, as an operating system
-hands out a file descriptor. That number is a **handle** (`abi/handle`):
-`slot | generation << 16`, its slot an index of the table that issued it.
-
-```text
-one 32-bit handle
-┌──────────────────────┬──────────────────────┐
-│      generation      │         slot         │
-│     bits 31..16      │      bits 15..0      │
-└──────────────────────┴──────────────────────┘
-            │                      │
-            │                      └─ the far side reads this, and nothing else
-            └─ only the issuing table reads this, so a handle kept
-               past its release names a generation the slot no longer
-               has, and cannot name whatever took the slot next
-```
-
-One table issues them (`xpute-guest/abi/handle.rs` `Table`): fixed at N slots,
-each holding the issuer's value while its handle is live. Slot 0 is never handed
-out, so 0 means "none". Handles live in `guest` and `host`, since a handle is
-one side of a boundary.
-
----
-
-## I/O, by asking
-
-A guest cannot do I/O, because the host owns the connections, the way an
-operating system owns its devices. So the guest asks, in what its turn leaves,
-and the host hands the ask on and brings back what came of it — in a completion,
-or into memory the request named.
-
-How much may be out at once, and which goes first, are the program's; it passes
-a bound in its own commands.
-
-### Streams
-
-Some requests come in thousands a turn — every call a renderer makes to a device
-it cannot reach — and need neither a reply nor a packet. For those the guest
-writes a **stream** (`ipc/stream`): records laid end to end during a turn, which
-the host runs, all of them, after the turn returns and before it rings again.
-
-```text
-0       END   how many words of records the turn wrote
-1…            the rest of the head, the program's
-head…   op · n · n words   op · n · n words   …
-```
-
-A record is an op the program numbers, a count, and that many words. Since the
-whole stream runs between two turns, a record can name memory for the host to
-write into, and the guest reads it next turn: the order is the acknowledgment.
-
-A record past the range is a sizing bug, and stops the guest. Inside a
-transaction (`begin`, `commit`), a record that does not fit drops the
-transaction whole, and `commit` says so.
-
-### Hostcalls and files
-
-A **hostcall** is a guest's call into its host, the name Wasmtime and Lucet give
-one. Some are every program's: open, read, write and close a file, and report
-the invariant that stopped the guest; a program numbers its own with the
-`PROGRAM` bit. Each is a record (`ipc/sys`, `spec/ipc/sys.json`), run after the
-turn from one stream the toc names (`SYS`), or, a program's own, at once
-(below). The report (`ABORT`) drops the turn's other calls and is published
-alone, at once; a guest's bug reporter and, in Rust, its panic hook publish it
-(`stop`), which `program!` and `XPUTE_PROGRAM` install.
-
-Files borrow Plan 9's file namespace:
-
-- the guest issues the descriptor, a handle of its own file table (`ipc/file`);
-- it names a file by a root the program numbers and a path below it;
-- a path walks down a name at a time, and an empty name, `.` or `..` is refused,
-  so a root is the whole of what it grants.
-
-An open is the one call that waits: the host answers it with `SYS_OPENED`, as
-port 0 and on a later turn, once the file can be read whole, and the door
-hands it to the program, which finds the open's owner
-in its file table (`ipc/file` `Files::opened`), a failed open closed there. A
-read, a write and a close are done before the next turn, and a file opened for
-writing is replaced at its close by what was written.
-
-The host's end runs some calls itself and hands the rest to the program
-(`@xpute/host/ipc/sys.ts` `Sys`, `SysHost`):
-
-```text
-the guest's turn          the host, after it returns   the program's SysHost
-────────────────          ──────────────────────────   ─────────────────────
-READ · WRITE · CLOSE ──▶  Sys, in the guest's memory
-OPENAT ────────────────▶  Sys ────── open ──────────▶  fs ─▶ Namespace,
-◀── SYS_OPENED, later ──  Sys ◀─── bytes, or errno ──  fs    one binding a root
-CLOSE of a write ──────▶  Sys ────── commit ────────▶  fs
-ABORT ─────────────────▶  Sys ────── report ────────▶  abort
-PROGRAM | n ───────────▶  Sys ────── call ──────────▶  program
-```
-
-The host's namespace (`@xpute/host/ipc/ns.ts` `Namespace`) is one such `fs`, its
-roots bound when it is made: each call goes to what is bound below the root it
-names, `ENOENT` below a root nothing is bound to, `EROFS` for a write below one
-that cannot be written. What a file is, where it lies and how it is fetched are
-the binding's; xpute only carries the call.
-
-### A hostcall run now
-
-A hostcall from the stream is answered after the turn returns, so a guest that
-needs its answer to go on waits a turn for it, and a chain of such calls a turn
-each. Some need nothing from outside: the host holds the answer already, as a
-page's text engine holds a line's width. For those a program's hostcall is run
-now: the guest lays its record past the last its turn has recorded, where
-nothing publishes it, and hands the host its offset (`ipc/sys`
-`Sys::call_now`). The host runs it before the call returns, reading that
-record and writing only what it names, and answers with a value or `-errno`. It
-hands the call to the program as it hands one from the stream
-(`@xpute/host/ipc/sys.ts` `Sys.call_now`), so the program numbers its
-calls once and may have them run either way.
-
-A hostcall run now never waits on anything outside: an open, a buffer read back
-and every hostcall of xpute's own go in the stream. It crosses the boundary once
-a call where the rest cross once a turn, so it is for the few calls a turn
-cannot answer late.
-
-A module imports the entry as `env.hostcall`, beside `env.now`; a guest linked
-into a native program is handed it with its clock (`BootInfo`). There the guest
-runs on its own thread while the caller of `run` waits, so the native host hands
-each hostcall run now back to that caller, which answers it on its own thread
-and waits again (`xpute-host/native/thread.rs`); the program says what answers
-through `xpute_hostcall_on` (`answer_with`), under xpute's name as the entry is.
-
-### A GPU's calls, in WebGPU's words
-
-A renderer's calls are what streams were made for, and most of what they say is
-WebGPU's, not one program's. So xpute writes them down once, in WebGPU's
-vocabulary (`spec/gpu/`). An enumeration is its spec's strings in order, so a
-host hands the string to the device as it is. A call is an op whose words follow
-the descriptor WebGPU takes, with nothing defaulted on the program's behalf.
-
-A guest writes them through the encoder (`gpu/encode`), which takes each
-object's handle from one table and writes each record twice, once to count its
-words and once into the room reserved for them. The **GPU host** runs the stream
-on its device after the turn returns (`gpu/host` `GpuHost`): on WebGPU in a
-page, on wgpu in a native program. Some calls finish later — an image copied
-in, a buffer read back, the queue's work done, a pipeline made by WebGPU's
-async call — so each names a word of the guest's memory and a ticket, a number
-the guest wrote there; once the call is done, the GPU host writes the ticket
-back with `DONE` set. A guest names an async pipeline in no record until its
-word says `DONE`, so nothing it records waits on the host. wgpu has no async
-call: the native GPU host makes the pipeline at once and writes its word by
-the same path.
-
-What a surface shows — a canvas, a view's layer, a window — is the program's,
-bound to the GPU host under the guest's handle for it and let go by that handle
-(`bind`, `unbind`); the guest names the surface by the handle's slot in its
-records. Here the GPU host is the side that keeps the object, so it checks the
-generation.
-
-The native GPU host reaches the guest's memory by offset (`xpute-host/mem.rs`
-`Memory`), each read or write only the range the guest names, since the host's
-own blocks may lie in the same memory. It also paces drawn frames, which a
-browser does for a page: a turn draws while fewer of the drawn frames it
-admitted are unfinished than its frame latency (`GpuHost::admit`), so taking a
-surface's texture never blocks. The answer reaches the guest as a value the
-program hands its renderer (`xpute-gpu/admit.rs` `Admit`); a page's GPU host
-admits every drawn frame (`every`). The GPU host's numbers and choices are the
-program's, said in its config (`Config`) and none defaulted, among them where a
-surface is configured (`ConfigureAt`). It opens the device too, as the program
-asks (`open`, `Ask`); on the web the browser's `requestAdapter` and
-`requestDevice` are that call already.
-
-Beside a guest linked into its own process, the GPU host is exported as the
-entry is, under xpute's names (`xpute-gpu/host/native.rs` `native_abi!`):
-`xpute_gpu_open` opens the device and holds it, `xpute_gpu_surface_bind` makes a
-surface of a window the platform hands over and binds it under the guest's
-handle, `xpute_gpu_surface_unbind` lets it go, and `xpute_gpu_wake_on` takes the
-function a completion calls to ask a turn. The GPU host is touched on the
-guest's thread alone (`Guest::run`), so a process holds one, as it holds one
-guest.
-
-The GPU's calls stand beside `kit` and the two ends: a program that never
-reaches a GPU links none of it. What a program builds over them, such as a
-shorthand for its pipelines, stays the program's.
-
----
-
-## The contract
-
-The contract is the part neither end may change; the rest of this document is
-how one end happens to be built.
-
-What cannot change is the rules below and the formats they travel in: the toc,
-the frame's four words, the ring's layout and the stream's records. Each rule is
-one the other end could catch being broken.
-
-0. **The toc.** The guest writes it in its first turn or in a boot call that
-   returns its offset, and the host finds everything from the one offset it
-   learns outside. A key appears at most once, an unknown key is passed over,
-   and an unknown magic or version is refused.
-1. **The core memory.** Every address that crosses is an offset into it.
-   Offset 0 names nothing, and nothing that crosses lies there.
-2. **The turn.** The guest runs only inside `run`, and the two sides never run
-   at once: the host touches nothing a turn writes until it has returned, but
-   what a hostcall run now names while it runs (rule 8). The quota is advice,
-   not a deadline: a guest can spend a whole quota inside one function, and the
-   host cannot take the turn back until it returns. `wake_ms` is 0 for the next
-   turn, a positive number for that many milliseconds from now, and negative
-   (`NO_WAKE`) for none. A turn of no quota is still a turn, and a question the
-   host needs answered at once is asked in one, of a command the guest answers
-   from what it already holds; one that waits on anything outside is answered on
-   a later turn.
-3. **The frame.** Four words: `tag`, `cmd` with its flags, `result`, and the
-   packet. With `ACKREQ` a submission gets exactly one reply; without it, a
-   reply only when it failed. A reply carries its submission's `tag` and `cmd`,
-   and `RES`. A tag names a port, and what port 0, the host, sends is
-   xpute's own.
-4. **What the host sends** is applied in order, each submission once. The guest may leave some for a later turn, never out of order or
-   skipped, and asks for the next turn while it does.
-5. **What a turn leaves** — events, replies, stream records — is taken by the
-   host before the next turn, none dropped. Order holds within one place a turn
-   writes to, not between places, so a guest that needs one request run before
-   another puts both in the same place. Running past the room set aside is a
-   sizing mistake, and stops the guest.
-6. **Handles.** A handle is `slot | generation << 16`, 0 is never one, and the
-   issuing side checks the generation.
-7. **The clock.** During a turn the guest reads the host's clock (`now`) in
-   milliseconds. It never runs backward, and only differences mean anything.
-8. **A hostcall run now.** During a turn the guest may hand the host the offset
-   of a hostcall's record. The host runs it before the call returns, reads that
-   record and writes only what it names, and answers with a value or `-errno`,
-   `ENOSYS` for a call that is not the program's. It answers from what it
-   already holds and waits on nothing outside, and the guest runs nothing until
-   it has, so the two sides still never run at once.
-
-Everything else is one end's own. The guest's: where its ranges lie, its heap,
-its tick, passes, tasks and files. The host's: the size of a quota, when to
-ring, how it reads what a turn left.
-
-The contract describes one host and one guest. Several guests under one host,
-passing buffers by ownership, do not change it. Where they share a thread or do
-not trust each other, that composition must bring what the contract does not:
-isolation, and a way to stop a guest that does not return.
-
----
-
-## Written in several languages
-
-The implementations do not all stand in the same relation, and which relation
-decides what must match.
-
-- **`kit` is symmetric.** Rust (`rust/kit`), TypeScript (`ts/kit`) and C++
-  (`cpp/xpute/kit`) implement the same kit, held to each other by the golden
-  records wherever bytes must match. TypeScript's has no `alloc`, since it has
-  no linear heap of its own, and no `bug`, since a thrown error carries its
-  stack.
-- **The two ends face each other.** A host end and a guest end owe each other
-  the contract and its formats; their module lists differ, and a module with
-  nothing facing it is whole.
-- **Guest ends are symmetric with each other.** Rust (`rust/guest`) and C++
-  (`cpp/xpute/guest`) are the same end, either plugged into any host, so what
-  one gives a program the other gives too. Both give a guest in one
-  declaration (`xpute-guest/program.rs` `program!`,
-  `cpp/xpute/guest/program.hpp` `XPUTE_PROGRAM`), which lays the range out by
-  the same numbers (`spec/program.json`), runs the turns and hands each command
-  to a function the program names, and runs as tasks what waits on the host, a
-  file read whole awaited across turns (`read`: a future in Rust, a coroutine's
-  awaitable in C++); and both give the parts it composes. One example, in each
-  language (`rust/example`, `cpp/example`), is held to the same host's tests.
-- **Host ends hold what their platform needs.** TypeScript's (`ts/host`)
-  reserves a module's memory and opens the module over it (`module.ts`), and
-  mounts the doorbell, the hostcalls' end and the strobe on any guest its
-  platform opened, in one call (`@xpute/host/host.ts` `mount`), which runs the
-  hostcall stream as each turn returns. `mount` reads the toc as it is called,
-  so the turn or the boot call that writes it has run by then. Over any mount a
-  **port** (`port.ts`) speaks as one sender, with a verb for each way a message
-  crosses: `send` and `on` by the rings, a turn later, and `call` directly,
-  answered before it returns; `open` opens a module built with `program!` or
-  `XPUTE_PROGRAM`, mounts on it and gives that port in one call. Rust's
-  (`rust/host`) reads a guest's memory by offset on every platform (`mem`), and
-  on a unix one hosts a guest linked into the host's own native process
-  (`native`). There it reserves
-  the memory, and runs every call into the guest on the guest's own thread,
-  since the guest keeps its module-wide values in `Global`s
-  (`xpute-guest/global.rs`), statics sound on one thread alone, handing each
-  hostcall back to the caller that waits. It also provides the allocator that
-  keeps the guest's blocks in its memory and every other thread's out of it.
-- **The GPU's calls follow the same split.** Each guest language writes them
-  (`rust/gpu`, `cpp/xpute/gpu`). The GPU hosts run them in TypeScript on WebGPU
-  (`ts/gpu`), and in Rust on wgpu behind the `host` feature.
-- **A guest built as a module is linked one way.** Its memory is imported from
-  the host and its stack goes first, at the bottom of the memory, so an overflow
-  traps; its stack's size and any front it keeps below the linker's data are its
-  own numbers. Rust's build script prints the flags (`xpute-guest/wasm/link.rs`
-  `link`), and the C++ guest is linked with the same (`cpp/Makefile`
-  `MODULE_LINK`).
-
-`kit` asks nothing of a program: link it and call it. `guest` and `host` ask it
-to run xpute's way — memory granted once, work in turns, I/O by asking.
-
-C++ is written from the contract and the formats, beside the Rust: built by the
-platform's compiler (`cpp/Makefile`), and held by the same records and traces,
-so the guests agree on what the boundary shows. Where C++ differs, it is the
-language:
-
-- it writes the codecs its standard library lacks;
-- its XTP reads a packet without allocating, handing back views;
-- a task is a C++20 coroutine where Rust's is a future;
-- it has no `Global`, which Rust needs a type for and C++ has as a plain static;
-- it uses RAII, templates and `Result`, with no exceptions and no RTTI.
-
-Its numbers — the errno table, the toc's keys, a frame's and a ring header's
-words — come from `spec/` as the other languages' do.
-
----
-
-## The golden records
-
-The golden records are what hold the languages to each other.
-
-Under `spec/golden/` are lines of `path<TAB>value`, produced once, checked once,
-and frozen. They are read by splitting each line (`kit` `golden`), so no parser
-change can make them drift. Each language that implements a part reads that
-part's records bit for bit, so a record is never re-recorded to make a test
-pass: a difference means one side moved, and a record changed on purpose changes
-for every language at once. There are two kinds:
-
-- **Across a protocol** — `wire/xtp`, `wire/tlv`, `codec/json` (which texts are
-  JSON at all, and what a number past the doubles reads as, as the host's own
-  `JSON.parse` judges them), and `gpu/programs` (the words each encoder writes
-  and the bytes each GPU host reads back). The bytes cross a boundary, so every
-  language must produce these exactly.
-- **Across languages** — `math/rng` (`rng.32` and `rng.64`), `math/scalar`,
-  `collection/deque` and `collection/heap`. Nothing crosses a boundary, but one
-  set of values holds every language's implementation: the same draws, the same
-  rounding, the same order.
-
-The **traces** under `spec/conformance/` are a third kind, not outputs at all.
-Each says what a host does and what it must then see: the completions, stream
-records and next-turn asks each turn leaves. They are written from the
-contract's rules and name only what a host can observe, so they hold every guest
-to the same thing. Files are a service the boundary carries, outside the
-contract, so their traces stand apart: `spec/conformance/sys/` holds the host's
-end, and `spec/conformance/file.tsv` every guest.
-
-One host runs them against every guest through the boundary alone
-(`@xpute/host/conformance.test.ts`): the Rust guest
-(`xpute-conformance/guest.rs`) and the C++ one (`cpp/conformance/guest.cpp`),
-each over the commands `spec/conformance/guest.json` numbers. Each guest's boot
-takes a seed and lays what it shares, the toc among them, in the order and with
-the gaps the seed draws (`LAYOUTS`), and the host runs every trace under each:
-only a host that finds them all through the toc, as rule 0 asks, passes. Each
-guest is built both as a native library and as a WebAssembly module that imports
-nothing but its memory, the clock and the hostcall; the C++ one from the
-library's amalgamation (`cpp/amalgamation.awk`), the two files a C++ program
-takes, so what the traces hold is what ships.
+## Boundaries
+
+- **The kit knows nothing of the link, hosts or memories.** It never depends
+  on either end.
+- **No method of the program's has a meaning in xpute.** A side delivers a
+  frame by its handle and reads nothing of what it says.
+- **The guest's memory is the guest's.** xpute lays nothing in it and sizes
+  nothing: a module's memory is its own, which it grows as its allocator asks,
+  and a native guest's is its process's. A span the guest
+  lends is read where it lies (`lent`, above), in place by a host in the same
+  process and by the native UI through a buffer over that span alone. Whether
+  the memory is fixed, what lies where in it and which allocator each
+  allocation takes are the program's, in either language.
+- **The policy is the program's.** When the guest runs and how much I/O is out
+  are decided outside xpute; it has no turn, no budget and no backpressure.
+- **The host implements only what every guest shares**: the clocks, the stop and
+  the log. Any other I/O is the program's, over its own interfaces or a
+  plugin it brings.
+- **xpute does not isolate.** The contract describes one host and one guest;
+  a guest that does not return is not stopped.
 
 ## Prior art
 
-What xpute took from work before it, or found it had arrived at. A link is given
-where the tree records the source.
+| Precedent | What is taken |
+| --- | --- |
+| WIT and its generated bindings (wit-bindgen, jco) | Every interface on the link declared in WIT, and both ends' bindings generated from it |
+| The component model's Canonical ABI and handle table | The packet's layout, `lent` from a borrow, `drop`, a later answer as `task.return`, and handles reused with a generation |
+| Binder's handle 0, 9P's walk and open | The root: one fixed `open` that turns a URI into a handle |
+| WASI's `wasi:clocks` | The clocks, as a subset |
+| gRPC's and Abseil's status codes | An errno's kind |
+| Linux's uAPI, which carries a user pointer in an ioctl's struct as a `__u64`; Vulkan's `VkDeviceAddress`; WebGPU's `GPUSize64` | An address the link carries, a u64 whatever the platform's pointer, so one layout and one golden record serve every platform |
+| [evanw/buddy-malloc](https://github.com/evanw/buddy-malloc) | `kit`'s buddy allocator, ported line for line |
+| POSIX and Linux errno | Every failure: a negative errno |
+| IEEE 754's round half to even, as WGSL rounds | The one rounding in every language |
 
-| Precedent                                                   | Where                            | What is taken                                                                  |
-| ----------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------ |
-| The exokernel and its library operating system              | the arrangement                  | The host grants real resources; the guest keeps its own abstractions over them |
-| Aegis                                                       | `sched/policy`                   | The quota as a cooperative counterpart of its CPU slice                        |
-| Linux's scheduling policies (`sched_setscheduler`)          | `sched/policy`                   | Its name: how turns are scheduled, chosen apart from what rings them           |
-| Android's Frame Pacing library (Swappy)                     | `sched/frame_pacing`             | Its name, and turns a whole number of refreshes apart                          |
-| A circuit's strobe, the pulse that says when to act         | `sched/strobe`                   | Its name                                                                       |
-| "core" for main memory, as in a core dump                   | the core memory                  | Its name                                                                       |
-| A linker script's output sections                           | `mem/section`                    | Ranges placed end to end without knowing what they hold                        |
-| [evanw/buddy-malloc](https://github.com/evanw/buddy-malloc) | `alloc/buddy_tree`               | The page allocator, ported line for line                                       |
-| SLUB                                                        | `alloc/slab`                     | A slab keeps its free list inside its free slots                               |
-| virtio's descriptor table, AF_XDP's UMEM                    | the rings (`spec/ipc/ring.json`) | Descriptors kept apart from the payload's slots                                |
-| io_uring                                                    | the rings                        | A submission ring and a completion ring                                        |
-| NVMe's queues and their doorbell registers                  | the doorbell                     | Its name, and that ringing it carries no message                               |
-| UDP's ports                                                 | the tag's port                   | A number a listener binds by convention; to none bound, a frame is dropped     |
-| NVMe's asynchronous events                                  | the frame's `RES`                | An event: a completion the guest posts unasked                                 |
-| KVM's `KVM_RUN`                                             | the turn                         | `run`: the call that runs the guest until it gives the processor back          |
-| Plan 9's file access, in POSIX's words                      | `ipc/sys`, `ipc/ns`              | Descriptors the guest issues; a root and a path; the host binds the roots      |
-| A CD's table of contents                                    | `ipc/toc`                        | Its name: where each part begins, read before anything else                    |
-| The ELF auxiliary vector                                    | `ipc/toc`                        | Entries a reader skips when it does not know them                              |
-| Wasmtime's and Lucet's hostcalls                            | `ipc/sys`                        | Its name: a guest's call into its host                                         |
-| POSIX and Linux errno                                       | `spec/status/errno.json`         | Negative errno numbers                                                         |
-| The host's `JSON.parse`                                     | `codec/json`                     | The grammar, judged as the host's parser judges it                             |
-| IEEE 754's round half to even, as WGSL rounds               | `math/scalar`                    | One rounding in every language                                                 |
-| splitmix64                                                  | `math/rng`                       | A reproducible generator, its seed's finalizer, and its high half as a u32     |
-| Murmur3's 32-bit finalizer                                  | `math/rng`                       | The 32-bit family's mix, for a GPU with no 64-bit integer                      |
-| FNV                                                         | `codec`                          | The hash                                                                       |
+## Codemap
+
+- `link/spec/` and `kit/spec/` hold the frame and the errno table, each with
+  golden records, the link's of its frames and packets; `link/wit/` and
+  `wit/` the interfaces.
+- `gen` (`xpute-gen`) and `link/gen` (`xpute-link-gen`) are the generators,
+  the second with the command a program writes its bindings with;
+  `gen-targets` is the data specs `xpute-gen` writes of xpute's parts, and
+  `tool` the `cargo spec` that checks and writes xpute's own.
+- `kit/rust` (`xpute-kit`), `kit/ts` (`@xpute/kit`) and `cpp/xpute/kit` are
+  the kit.
+- `link/rust` (`xpute-link`), `link/ts` (`@xpute/link`) and `cpp/xpute/link`
+  are the link; `guest/rust` (`xpute-guest`) and `cpp/xpute/guest` the
+  guest's end.
+- `host/rust` (`xpute-host`) and `host/ts` (`@xpute/host`) are the host,
+  one in each language; `runtime/web` (`@xpute/runtime-web`) is the web
+  runtime, its page half (`page.ts`) the web UI end, and `runtime/native`
+  (`xpute-runtime-native`) the native runtime; and `expo` (`@xpute/expo`) is
+  the native UI end, the Expo module that reaches the native runtime, with
+  the runtime's C header (`ios/CXpute/xpute.h`) and its JNI class
+  (`android/.../xpute/Runtime.kt`). The guest in Rust and C++, both runtimes
+  and `expo` each have a README beside them that says how a program takes
+  them.
+- `golden/rust` (`xpute-golden`), `golden/ts` (`@xpute/golden`) and
+  `cpp/dev/test/` are what the tests take,
+  `cpp/amalgamation.awk` makes the C++ library's two files, and
+  `cpp/dev/guest.cpp` is the smallest guest, which the build links over them
+  as a module.

@@ -1,3 +1,25 @@
+// MIT License
+//
+// Copyright (c) 2025 canplane
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 // xpute.cpp
 //
 // GENERATED from cpp/xpute/ by `make -C cpp amalgamation` (cpp/amalgamation.awk) — do not edit.
@@ -44,12 +66,12 @@ std::size_t hex_encode(std::span<const std::uint8_t> in, std::span<char> out) no
 }
 
 Result<std::size_t> hex_decode(std::string_view in, std::span<std::uint8_t> out) noexcept {
-    if (in.size() % 2 != 0) return marshal_error(Errno::ebadmsg);
+    if (in.size() % 2 != 0) return make_error(Errno::ebadmsg);
     ensure(out.size() >= in.size() / 2, Errno::enospc, out.size(), in.size());
     for (std::size_t i = 0; i < in.size(); i += 2) {
         int hi = hex_val(in[i]);
         int lo = hex_val(in[i + 1]);
-        if (hi < 0 || lo < 0) return marshal_error(Errno::ebadmsg);
+        if (hi < 0 || lo < 0) return make_error(Errno::ebadmsg);
         out[i / 2] = static_cast<std::uint8_t>(hi << 4 | lo);
     }
     return in.size() / 2;
@@ -77,9 +99,9 @@ std::size_t base64url_encode(std::span<const std::uint8_t> in, std::span<char> o
 }
 
 Result<std::size_t> base64url_decode(std::string_view in, std::span<std::uint8_t> out) noexcept {
-    // A final group of one character carries six bits, which is no whole
-    // byte: no encoding ends that way.
-    if (in.size() % 4 == 1) return marshal_error(Errno::ebadmsg);
+    // A final group of one character carries only six bits, less than a
+    // byte, so no encoding ends that way.
+    if (in.size() % 4 == 1) return make_error(Errno::ebadmsg);
     std::size_t bytes = in.size() / 4 * 3 + (in.size() % 4 == 0 ? 0 : in.size() % 4 - 1);
     ensure(out.size() >= bytes, Errno::enospc, out.size(), bytes);
     std::size_t at = 0;
@@ -88,11 +110,11 @@ Result<std::size_t> base64url_decode(std::string_view in, std::span<std::uint8_t
         std::uint32_t w = 0;
         for (std::size_t k = 0; k < 4; k++) {
             int v = k < n ? b64url_val(in[i + k]) : 0;
-            if (v < 0) return marshal_error(Errno::ebadmsg);
+            if (v < 0) return make_error(Errno::ebadmsg);
             w = w << 6 | static_cast<std::uint32_t>(v);
         }
         // Bits past the last byte are zero in any canonical encoding.
-        if ((n == 2 && (w & 0xffff) != 0) || (n == 3 && (w & 0xff) != 0)) return marshal_error(Errno::ebadmsg);
+        if ((n == 2 && (w & 0xffff) != 0) || (n == 3 && (w & 0xff) != 0)) return make_error(Errno::ebadmsg);
         out[at++] = static_cast<std::uint8_t>(w >> 16);
         if (n > 2) out[at++] = static_cast<std::uint8_t>(w >> 8);
         if (n > 3) out[at++] = static_cast<std::uint8_t>(w);
@@ -153,7 +175,8 @@ std::optional<std::uint32_t> hex4(std::string_view s, std::size_t at) noexcept {
 using json_detail::hex4;
 using json_detail::skip_ws;
 
-// The check recurses, and a module's stack is fixed.
+// The grammar check recurses once for each level of nesting, and a module's
+// stack has a fixed size, so a deeper text is refused.
 static constexpr std::uint32_t MAX_DEPTH = 128;
 
 static std::optional<std::size_t> skip_string(std::string_view s, std::size_t at) noexcept {
@@ -175,13 +198,15 @@ static std::optional<std::size_t> skip_string(std::string_view s, std::size_t at
             continue;
         }
         if (b < 0x20) return std::nullopt;
-        // A UTF-8 continuation byte is never a quote or a backslash.
+        // Every byte of a multi-byte UTF-8 sequence is above 0x7F and so is
+        // never a quote or a backslash; a string can be walked a byte at a
+        // time.
         at++;
     }
 }
 
-// By JSON's grammar: `+1`, `.5`, `1.` and `01` are refused, as `JSON.parse`
-// refuses them.
+// Follows JSON's number grammar: `+1`, `.5`, `1.` and `01` are refused, as the
+// runtime's `JSON.parse` refuses them.
 static std::optional<std::size_t> skip_number(std::string_view s, std::size_t at) noexcept {
     auto digits = [&](std::size_t from) {
         std::size_t i = from;
@@ -277,9 +302,11 @@ std::optional<bool> JsonValue::as_bool() const noexcept {
     return std::nullopt;
 }
 
-// Past the doubles, JSON.parse and Rust's `parse` read a magnitude over the
-// largest as an infinity and one under the least as a zero: which, by the
-// place of the leading digit plus the exponent.
+// The value of a number beyond the range of doubles, which `from_chars`
+// refuses. `JSON.parse` and Rust's `parse` read a magnitude above the largest
+// double as an infinity and one below the least as zero, and so does this; it
+// tells the two apart by the decimal place of the leading digit plus the
+// exponent.
 static double beyond_doubles(std::string_view t) noexcept {
     bool neg = t.front() == '-';
     std::size_t e = t.find_first_of("eE");
@@ -292,7 +319,8 @@ static double beyond_doubles(std::string_view t) noexcept {
         std::size_t i = e + 1;
         bool exp_neg = t[i] == '-';
         if (t[i] == '-' || t[i] == '+') i++;
-        // Clamped: past this, any exponent decides alone.
+        // The exponent is clamped: beyond this size it decides the result
+        // alone, whatever the mantissa.
         for (; i < t.size(); i++) exp = std::min(exp * 10 + (t[i] - '0'), 100000L);
         if (exp_neg) exp = -exp;
     }
@@ -316,17 +344,17 @@ std::optional<JsonStr> JsonValue::as_str() const noexcept {
     return JsonStr(s_.substr(1, s_.size() - 2));
 }
 
-JsonItems JsonValue::items() const noexcept {
-    return JsonItems(s_, type_of() == JsonType::array ? 1 : s_.size());
+JsonItemIter JsonValue::items() const noexcept {
+    return JsonItemIter(s_, type_of() == JsonType::array ? 1 : s_.size());
 }
 
-JsonFields JsonValue::fields() const noexcept {
-    return JsonFields(s_, type_of() == JsonType::object ? 1 : s_.size());
+JsonFieldIter JsonValue::fields() const noexcept {
+    return JsonFieldIter(s_, type_of() == JsonType::object ? 1 : s_.size());
 }
 
 std::optional<JsonValue> JsonValue::get(std::string_view key) const noexcept {
     std::optional<JsonValue> last;
-    JsonFields f = fields();
+    JsonFieldIter f = fields();
     while (auto field = f.next()) {
         if (field->first.eq_str(key)) last = field->second;
     }
@@ -334,26 +362,27 @@ std::optional<JsonValue> JsonValue::get(std::string_view key) const noexcept {
 }
 
 std::optional<JsonValue> JsonValue::at(std::size_t idx) const noexcept {
-    JsonItems it = items();
+    JsonItemIter it = items();
     for (std::size_t i = 0;; i++) {
         std::optional<JsonValue> v = it.next();
         if (!v || i == idx) return v;
     }
 }
 
-std::optional<JsonValue> JsonItems::next() noexcept {
+std::optional<JsonValue> JsonItemIter::next() noexcept {
     std::size_t start = skip_ws(s_, at_);
     if (start >= s_.size() || s_[start] == ']') {
         at_ = s_.size();
         return std::nullopt;
     }
-    // The text was checked whole.
+    // `read_json` checked the whole text, so a value starts here and the
+    // skip cannot fail.
     std::size_t end = *skip_val(s_, start, 0);
     at_ = skip_ws(s_, end) + 1;
     return JsonValue(s_.substr(start, end - start));
 }
 
-std::optional<std::pair<JsonStr, JsonValue>> JsonFields::next() noexcept {
+std::optional<std::pair<JsonStr, JsonValue>> JsonFieldIter::next() noexcept {
     std::size_t key_at = skip_ws(s_, at_);
     if (key_at >= s_.size() || s_[key_at] != '"') {
         at_ = s_.size();
@@ -380,7 +409,7 @@ static char32_t utf8_next(std::string_view s, std::size_t &at) noexcept {
     return c;
 }
 
-std::optional<char32_t> JsonChars::next() noexcept {
+std::optional<char32_t> JsonCharIter::next() noexcept {
     if (rest_.empty()) return std::nullopt;
     std::size_t at = 0;
     char32_t c = utf8_next(rest_, at);
@@ -419,7 +448,7 @@ std::optional<char32_t> JsonChars::next() noexcept {
 
 bool JsonStr::eq_str(std::string_view s) const noexcept {
     if (std::optional<std::string_view> plain = as_plain()) return *plain == s;
-    JsonChars c = chars();
+    JsonCharIter c = chars();
     std::size_t at = 0;
     for (;;) {
         std::optional<char32_t> a = c.next();
@@ -433,6 +462,8 @@ bool JsonStr::eq_str(std::string_view s) const noexcept {
 // cpp/xpute/kit/status/bug.cpp
 
 #include <atomic>
+#include <cstdarg>
+#include <cstdlib>
 
 namespace xpute {
 
@@ -445,23 +476,123 @@ void set_report(Report report) noexcept {
     installed_report.compare_exchange_strong(none, report);
 }
 
-void bug(Errno errnum, std::uint64_t a, std::uint64_t b, std::source_location at) noexcept {
-    if (Report report = installed_report.load()) report(errnum, at, a, b);
+#ifndef __wasm__
+sigjmp_buf *&bug_detail::catcher() noexcept {
+    thread_local sigjmp_buf *innermost = nullptr;
+    return innermost;
+}
+#endif
+
+void bug(Errno errnum, std::uint64_t a, std::uint64_t b, const char *msg, std::source_location at) noexcept {
+    if (Report report = installed_report.load()) report(errnum, at, a, b, msg);
+#ifndef __wasm__
+    if (sigjmp_buf *c = bug_detail::catcher()) siglongjmp(*c, 1);
+#endif
     std::abort();
 }
 
 } // namespace xpute
 
+namespace {
+// The bytes of a libc++ check's message: its file, its line, the expression
+// and what it says of it, a longer one cut.
+constexpr std::size_t ABORT_MSG_CAP = 512;
+
+// The bug of a failed check of libc++'s own, with the check's message as
+// `fmt` and `args` write it. The message is written into one static buffer,
+// so that it is storage nothing allocates, as a bug's message is, one a
+// thread, as a native bug is caught on its own thread. It is
+// written here and not by `vsnprintf`, which links WASI's file calls into a
+// module: a string, a character and an integer of any length are written, and
+// from a conversion that is none of them on, `fmt` goes as it is, since
+// nothing says how wide its argument is.
+[[noreturn]] void abort_bug(const char *fmt, std::va_list args) noexcept {
+    static thread_local char msg[ABORT_MSG_CAP];
+    std::size_t n = 0;
+    auto put = [&](char c) {
+        if (n + 1 < ABORT_MSG_CAP) msg[n++] = c;
+    };
+    auto number = [&](unsigned long long v, unsigned base) {
+        char digits[24];
+        std::size_t k = 0;
+        do digits[k++] = "0123456789abcdef"[v % base];
+        while ((v /= base) != 0);
+        while (k != 0) put(digits[--k]);
+    };
+    const char *f = fmt;
+    while (*f != '\0') {
+        if (*f != '%') {
+            put(*f++);
+            continue;
+        }
+        const char *spec = f + 1;
+        int length = 0; // 0 an int, 1 a long, 2 a long long, 3 a size_t
+        for (; *spec == 'l' || *spec == 'z'; spec++) length = *spec == 'z' ? 3 : length + 1;
+        auto is_signed = *spec == 'd' || *spec == 'i';
+        if (*spec == '%') {
+            put('%');
+        } else if (*spec == 's' && length == 0) {
+            const char *str = va_arg(args, const char *);
+            for (; str != nullptr && *str != '\0'; str++) put(*str);
+        } else if (*spec == 'c' && length == 0) {
+            put(static_cast<char>(va_arg(args, int)));
+        } else if ((is_signed || *spec == 'u' || *spec == 'x') && length <= 3) {
+            unsigned long long v;
+            if (length == 0) {
+                v = is_signed ? static_cast<unsigned long long>(va_arg(args, int)) : va_arg(args, unsigned);
+            } else if (length == 1) {
+                v = is_signed ? static_cast<unsigned long long>(va_arg(args, long)) : va_arg(args, unsigned long);
+            } else if (length == 2) {
+                v = va_arg(args, unsigned long long);
+            } else {
+                v = va_arg(args, std::size_t);
+            }
+            if (is_signed && static_cast<long long>(v) < 0) {
+                put('-');
+                v = 0 - v;
+            }
+            number(v, *spec == 'x' ? 16 : 10);
+        } else {
+            for (; *f != '\0'; f++) put(*f);
+            break;
+        }
+        f = spec + 1;
+    }
+    msg[n] = '\0';
+    xpute::bug(xpute::Errno::enotrecoverable, 0, 0, msg);
+}
+} // namespace
+
+void xpute_verbose_abort(const char *fmt, ...) noexcept {
+    std::va_list args;
+    va_start(args, fmt);
+    abort_bug(fmt, args);
+}
+
 #ifdef __wasm__
-// libc++'s own definition prints to stderr, which on wasm imports WASI's file
-// calls, a second way to the host beside the contract.
-void std::__libcpp_verbose_abort(char const *, ...) noexcept {
+// libc++'s compiled library calls its own handler, not the macro, and its
+// definition prints to stderr. On WebAssembly that imports WASI's file calls,
+// which would give the module a second way to reach the host beside the
+// contract, so a module's handler is the bug as well.
+void std::__libcpp_verbose_abort(char const *fmt, ...) noexcept {
+    std::va_list args;
+    va_start(args, fmt);
+    abort_bug(fmt, args);
+}
+
+// libc++abi's `__cxa_pure_virtual`, which an abstract class's vtable names,
+// prints to stderr in the same way, so it is replaced as well.
+extern "C" void __cxa_pure_virtual() {
     xpute::bug(xpute::Errno::enotrecoverable);
 }
 
-// libc++abi's, which an abstract class's table names, prints the same way.
-extern "C" void __cxa_pure_virtual() {
-    xpute::bug(xpute::Errno::enotrecoverable);
+// So is libc++abi's `__abort_message`, which its type information's vtables
+// reach, and which a class over one of libc++'s, as the kit's `HeapMalloc`
+// memory resource is, links in.
+extern "C" void __abort_message(const char *fmt, ...) {
+    std::va_list args;
+    va_start(args, fmt);
+    abort_bug(fmt, args);
 }
 #endif
 
@@ -477,13 +608,13 @@ Result<std::optional<Value>> Reader::next() noexcept {
     }
     auto tag = static_cast<Tag>(buf_[off_++]);
     auto scalar = [this]<class T>() -> Result<std::optional<Value>> {
-        if (!has(sizeof(T))) return marshal_error(Errno::ebadmsg);
+        if (!has(sizeof(T))) return make_error(Errno::ebadmsg);
         return std::optional<Value>(le<T>());
     };
     auto run = [this]() -> Result<std::span<const std::uint8_t>> {
-        if (!has(4)) return marshal_error(Errno::ebadmsg);
+        if (!has(4)) return make_error(Errno::ebadmsg);
         std::uint32_t len = le<std::uint32_t>();
-        if (!has(len)) return marshal_error(Errno::ebadmsg);
+        if (!has(len)) return make_error(Errno::ebadmsg);
         std::span<const std::uint8_t> bytes = buf_.subspan(off_, len);
         off_ += len;
         return bytes;
@@ -493,7 +624,7 @@ Result<std::optional<Value>> Reader::next() noexcept {
         end_ = End::closed;
         return std::optional<Value>();
     case Tag::boolean: {
-        if (!has(1)) return marshal_error(Errno::ebadmsg);
+        if (!has(1)) return make_error(Errno::ebadmsg);
         return std::optional<Value>(buf_[off_++] != 0);
     }
     case Tag::u8:
@@ -524,10 +655,10 @@ Result<std::optional<Value>> Reader::next() noexcept {
     case Tag::bytes: {
         Result<std::span<const std::uint8_t>> r = run();
         if (!r) return r.error();
-        return std::optional<Value>(Bytes{*r});
+        return std::optional<Value>(Blob{*r});
     }
     }
-    return marshal_error(Errno::ebadmsg);
+    return make_error(Errno::ebadmsg);
 }
 
 } // namespace xpute::tlv
@@ -540,91 +671,91 @@ template <class T> Result<T> Cursor::get_as() const noexcept {
     Result<Value> v = get();
     if (!v) return v.error();
     if (const T *x = std::get_if<T>(&*v)) return *x;
-    return marshal_error(Errno::ebadmsg);
+    return make_error(Errno::ebadmsg);
 }
 
 template <class T> Result<Value> Cursor::scalar() const noexcept {
-    if (std::uint64_t{base_} + sizeof(T) > pkt_.size()) return marshal_error(Errno::ebadmsg);
+    if (std::uint64_t{base_} + sizeof(T) > pkt_.size()) return make_error(Errno::ebadmsg);
     return Value(load<T>(pkt_.data() + base_));
 }
 
 Result<Cursor> Cursor::at(std::span<const std::uint8_t> pkt, std::uint32_t base, NodeType type) noexcept {
     Result<std::uint32_t> unit = align_sz(type);
     if (!unit) return unit.error();
-    if (base % *unit != 0) return marshal_error(Errno::ebadmsg);
+    if (base % *unit != 0) return make_error(Errno::ebadmsg);
     if (type != type_of(SpecialType::branch)) return Cursor(pkt, base, type);
-    if (std::uint64_t{base} + WORD_SZ > pkt.size()) return marshal_error(Errno::ebadmsg);
+    if (std::uint64_t{base} + WORD_SZ > pkt.size()) return make_error(Errno::ebadmsg);
     Result<std::uint32_t> len = get_len(pkt, base);
     if (!len) return len.error();
-    if (*len > (pkt.size() - base - WORD_SZ) / WORD_SZ) return marshal_error(Errno::ebadmsg);
+    if (*len > (pkt.size() - base - WORD_SZ) / WORD_SZ) return make_error(Errno::ebadmsg);
     return Cursor(pkt, base, type, *len);
 }
 
 Result<BranchCursor> Cursor::as_branch() const noexcept {
-    if (is_null()) return marshal_error(Errno::efault);
-    if (!is_branch()) return marshal_error(Errno::ebadmsg);
+    if (is_null()) return make_error(Errno::efault);
+    if (!is_branch()) return make_error(Errno::ebadmsg);
     return BranchCursor(*this);
 }
 
 Result<Array> Cursor::array(std::uint32_t elem) const noexcept {
     std::uint64_t payload = std::uint64_t{base_} + WORD_SZ;
-    if (payload > pkt_.size()) return marshal_error(Errno::ebadmsg);
+    if (payload > pkt_.size()) return make_error(Errno::ebadmsg);
     Result<std::uint32_t> len = get_len(pkt_, base_);
     if (!len) return len.error();
     std::uint64_t bytes = std::uint64_t{*len} * elem;
-    if (bytes > pkt_.size() - payload) return marshal_error(Errno::ebadmsg);
+    if (bytes > pkt_.size() - payload) return make_error(Errno::ebadmsg);
     return Array{static_cast<SequenceType>(type_), pkt_.subspan(payload, bytes)};
 }
 
 Result<Bitset> Cursor::bitset() const noexcept {
     std::uint64_t payload = std::uint64_t{base_} + WORD_SZ;
-    if (payload > pkt_.size()) return marshal_error(Errno::ebadmsg);
+    if (payload > pkt_.size()) return make_error(Errno::ebadmsg);
     Result<std::uint32_t> len = get_len(pkt_, base_);
     if (!len) return len.error();
     std::uint64_t bytes = (std::uint64_t{*len} + 7) >> 3;
-    if (bytes > pkt_.size() - payload) return marshal_error(Errno::ebadmsg);
+    if (bytes > pkt_.size() - payload) return make_error(Errno::ebadmsg);
     return Bitset{pkt_.subspan(payload, bytes), *len};
 }
 
-// The wire carries a NUL after the bytes, which the length leaves out and a
-// string that reads must have; the bytes are UTF-8 or refused.
+// A str must end with the NUL that `len` does not count, and its bytes must
+// be UTF-8.
 Result<std::string_view> Cursor::str() const noexcept {
     std::uint64_t payload = std::uint64_t{base_} + WORD_SZ;
-    if (payload > pkt_.size()) return marshal_error(Errno::ebadmsg);
+    if (payload > pkt_.size()) return make_error(Errno::ebadmsg);
     Result<std::uint32_t> nbyte = get_len(pkt_, base_);
     if (!nbyte) return nbyte.error();
-    if (std::uint64_t{*nbyte} + 1 > pkt_.size() - payload) return marshal_error(Errno::ebadmsg);
-    if (pkt_[payload + *nbyte] != 0) return marshal_error(Errno::ebadmsg);
+    if (std::uint64_t{*nbyte} + 1 > pkt_.size() - payload) return make_error(Errno::ebadmsg);
+    if (pkt_[payload + *nbyte] != 0) return make_error(Errno::ebadmsg);
     std::string_view s(reinterpret_cast<const char *>(pkt_.data() + payload), *nbyte);
-    if (!is_utf8(s)) return marshal_error(Errno::ebadmsg);
+    if (!is_utf8(s)) return make_error(Errno::ebadmsg);
     return s;
 }
 
 Result<std::string_view> Cursor::get_str_ref() const noexcept {
-    if (is_null() || type_ != type_of(SequenceType::str)) return marshal_error(Errno::ebadmsg);
+    if (is_null() || type_ != type_of(SequenceType::str)) return make_error(Errno::ebadmsg);
     return str();
 }
 
-Result<Strs> Cursor::strs() const noexcept {
+Result<StrList> Cursor::strs() const noexcept {
     std::uint64_t payload = std::uint64_t{base_} + WORD_SZ;
-    if (payload > pkt_.size()) return marshal_error(Errno::ebadmsg);
+    if (payload > pkt_.size()) return make_error(Errno::ebadmsg);
     Result<std::uint32_t> len = get_len(pkt_, base_);
     if (!len) return len.error();
     std::uint32_t n = *len;
     std::uint64_t blob = payload + 4 * (std::uint64_t{n} + 1);
-    if (blob > pkt_.size()) return marshal_error(Errno::ebadmsg);
+    if (blob > pkt_.size()) return make_error(Errno::ebadmsg);
     auto off = [&](std::uint32_t i) { return load<std::uint32_t>(pkt_.data() + payload + 4 * i); };
     std::uint32_t total = off(n);
-    if (total > pkt_.size() - blob) return marshal_error(Errno::ebadmsg);
+    if (total > pkt_.size() - blob) return make_error(Errno::ebadmsg);
     for (std::uint32_t i = 0; i < n; i++) {
-        if (off(i) > off(i + 1) || off(i + 1) > total) return marshal_error(Errno::ebadmsg);
-        if (!is_utf8(std::string_view(reinterpret_cast<const char *>(pkt_.data() + blob + off(i)), off(i + 1) - off(i)))) return marshal_error(Errno::ebadmsg);
+        if (off(i) > off(i + 1) || off(i + 1) > total) return make_error(Errno::ebadmsg);
+        if (!is_utf8(std::string_view(reinterpret_cast<const char *>(pkt_.data() + blob + off(i)), off(i + 1) - off(i)))) return make_error(Errno::ebadmsg);
     }
-    return Strs{pkt_.subspan(payload, 4 * (std::uint64_t{n} + 1)), pkt_.subspan(blob, total), n};
+    return StrList{pkt_.subspan(payload, 4 * (std::uint64_t{n} + 1)), pkt_.subspan(blob, total), n};
 }
 
-Result<Strs> Cursor::get_strs() const noexcept {
-    if (is_null() || type_ != type_of(SequenceType::strs)) return marshal_error(Errno::ebadmsg);
+Result<StrList> Cursor::get_strs() const noexcept {
+    if (is_null() || type_ != type_of(SequenceType::strs)) return make_error(Errno::ebadmsg);
     return strs();
 }
 
@@ -681,14 +812,11 @@ Result<Value> Cursor::get() const noexcept {
     case SequenceType::strs:
         return seq(strs());
     }
-    return marshal_error(Errno::ebadmsg);
+    return make_error(Errno::ebadmsg);
 }
 
 Result<std::uint64_t> Cursor::get_u64() const noexcept {
     return get_as<std::uint64_t>();
-}
-Result<std::int64_t> Cursor::get_i64() const noexcept {
-    return get_as<std::int64_t>();
 }
 Result<bool> Cursor::get_bool() const noexcept {
     return get_as<bool>();
@@ -702,21 +830,21 @@ Result<double> Cursor::get_number() const noexcept {
             using T = std::decay_t<decltype(x)>;
             if constexpr (std::is_arithmetic_v<T> && !std::is_same_v<T, bool> && sizeof(T) <= 4) return static_cast<double>(x);
             else if constexpr (std::is_same_v<T, double>) return x;
-            else return marshal_error(Errno::ebadmsg);
+            else return make_error(Errno::ebadmsg);
         },
         *v);
 }
 
 Result<Cursor> BranchCursor::at(std::uint32_t idx) const noexcept {
-    if (idx >= len()) return marshal_error(Errno::efault);
+    if (idx >= len()) return make_error(Errno::efault);
     Result<Desc> d = get_desc(node_.pkt_, base() + WORD_SZ + idx * WORD_SZ);
     if (!d) return d.error();
     auto [rel_off, type] = *d;
     if (rel_off == 0) return Cursor(node_.pkt_, 0, type);
-    if (rel_off >= node_.pkt_.size() - base()) return marshal_error(Errno::ebadmsg);
+    if (rel_off >= node_.pkt_.size() - base()) return make_error(Errno::ebadmsg);
     std::uint32_t child = base() + rel_off;
     std::uint32_t end = end_of(idx);
-    if (child < base() + WORD_SZ + len() * WORD_SZ || child >= end) return marshal_error(Errno::ebadmsg);
+    if (child < base() + WORD_SZ + len() * WORD_SZ || child >= end) return make_error(Errno::ebadmsg);
     return Cursor::at(node_.pkt_.first(end), child, type);
 }
 
@@ -736,13 +864,13 @@ Result<BranchCursor> BranchCursor::at_branch(std::uint32_t idx) const noexcept {
 }
 
 Result<TreeReader> TreeReader::make(std::span<const std::uint8_t> pkt) noexcept {
-    if (pkt.size() < HDR_SZ) return marshal_error(Errno::ebadmsg);
+    if (pkt.size() < HDR_SZ) return make_error(Errno::ebadmsg);
     Result<std::uint32_t> magic = get_len(pkt, 0);
-    if (!magic || *magic != MAGIC) return marshal_error(Errno::ebadmsg);
+    if (!magic || *magic != MAGIC) return make_error(Errno::ebadmsg);
     Result<Desc> d = get_desc(pkt, WORD_SZ);
     if (!d) return d.error();
     auto [payload_sz, type] = *d;
-    if (payload_sz > pkt.size() - HDR_SZ) return marshal_error(Errno::ebadmsg);
+    if (payload_sz > pkt.size() - HDR_SZ) return make_error(Errno::ebadmsg);
     if (payload_sz == 0) return TreeReader(Cursor(pkt, 0, type));
     Result<Cursor> root = Cursor::at(pkt.first(HDR_SZ + payload_sz), HDR_SZ, type);
     if (!root) return root.error();
@@ -769,12 +897,12 @@ constexpr std::uint64_t word_up(std::uint64_t n) noexcept {
 } // namespace
 
 PacketWriter::PacketWriter(std::span<std::uint8_t> buf) noexcept : buf_(buf.first(std::min<std::size_t>(buf.size(), MAX_PKT_SZ))) {
-    if (buf_.size() < HDR_SZ) err_ = marshal_error(Errno::einval);
+    if (buf_.size() < HDR_SZ) err_ = make_error(Errno::einval);
     else std::memset(buf_.data(), 0, HDR_SZ);
 }
 
 std::optional<std::uint32_t> PacketWriter::spoil(Errno errnum) noexcept {
-    if (!err_) err_ = marshal_error(errnum);
+    if (!err_) err_ = make_error(errnum);
     return std::nullopt;
 }
 
@@ -789,10 +917,10 @@ std::optional<std::uint32_t> PacketWriter::reserve(std::uint32_t unit, std::uint
 }
 
 PacketWriter &PacketWriter::entry(std::optional<std::uint32_t> at, NodeType type) noexcept {
-    ensure(frame_.written < frame_.cnt, Errno::enospc, frame_.cnt);
-    if (frame_.root) root_type_ = type;
-    else if (!err_) set_word(buf_, frame_.base + WORD_SZ + frame_.written * WORD_SZ, at ? *at - frame_.base : 0, type);
-    frame_.written++;
+    ensure(table_.written < table_.cnt, Errno::enospc, table_.cnt);
+    if (table_.root) root_type_ = type;
+    else if (!err_) set_word(buf_, table_.base + WORD_SZ + table_.written * WORD_SZ, at ? *at - table_.base : 0, type);
+    table_.written++;
     return *this;
 }
 
@@ -842,7 +970,8 @@ std::optional<std::uint32_t> PacketWriter::str_commit(std::uint32_t len) noexcep
 
 PacketWriter &PacketWriter::str(std::optional<std::string_view> s) noexcept {
     if (!s) return entry(std::nullopt, type_of(SequenceType::str));
-    // Copied the way a string written in place goes in, so the two lay out alike.
+    // Copied through `str_with`, as a string written in place is, so that the
+    // two fit and lay out alike.
     return str_with([&](std::span<char> room) -> std::optional<std::size_t> {
         if (s->size() > room.size()) return std::nullopt;
         std::memcpy(room.data(), s->data(), s->size());
@@ -879,8 +1008,9 @@ std::optional<std::uint32_t> PacketWriter::branch_open(std::uint32_t cnt) noexce
     return at;
 }
 
-// A branch ends on a word, so what follows it starts where the encoder
-// starts it.
+// A branch's extent ends on a word boundary, so a node after it starts on the
+// next word even when it needs less alignment. Every language pads the same
+// way, which keeps their bytes equal.
 std::optional<std::uint32_t> PacketWriter::branch_close(std::optional<std::uint32_t> at) noexcept {
     if (!at || err_) return at;
     std::uint64_t end = word_up(lim_);
@@ -893,8 +1023,8 @@ std::optional<std::uint32_t> PacketWriter::branch_close(std::optional<std::uint3
 PacketWriter &PacketWriter::graft(std::span<const std::uint8_t> pkt) noexcept {
     std::optional<std::uint32_t> at;
     NodeType type = type_of(SpecialType::nil);
-    Result<std::uint32_t> magic = pkt.size() < HDR_SZ ? marshal_error(Errno::ebadmsg) : get_len(pkt, 0);
-    Result<Desc> d = magic && *magic == MAGIC ? get_desc(pkt, WORD_SZ) : marshal_error(Errno::ebadmsg);
+    Result<std::uint32_t> magic = pkt.size() < HDR_SZ ? make_error(Errno::ebadmsg) : get_len(pkt, 0);
+    Result<Desc> d = magic && *magic == MAGIC ? get_desc(pkt, WORD_SZ) : make_error(Errno::ebadmsg);
     if (!d) {
         spoil(Errno::ebadmsg);
     } else {
@@ -915,10 +1045,10 @@ PacketWriter &PacketWriter::graft(std::span<const std::uint8_t> pkt) noexcept {
 }
 
 Result<std::uint32_t> PacketWriter::finish() noexcept {
-    ensure(frame_.root && frame_.written == frame_.cnt, Errno::enotrecoverable, frame_.cnt, frame_.written);
+    ensure(table_.root && table_.written == table_.cnt, Errno::enotrecoverable, table_.cnt, table_.written);
     if (err_) return *err_;
     std::uint64_t end = word_up(lim_);
-    if (end > buf_.size()) return marshal_error(Errno::eoverflow);
+    if (end > buf_.size()) return make_error(Errno::eoverflow);
     std::memset(buf_.data() + lim_, 0, end - lim_);
     set_word(buf_, 0, MAGIC, RESERVED);
     set_word(buf_, WORD_SZ, lim_ - HDR_SZ, root_type_);
@@ -927,823 +1057,508 @@ Result<std::uint32_t> PacketWriter::finish() noexcept {
 
 } // namespace xpute::xtp
 
-// cpp/xpute/guest/clock.cpp
+// cpp/xpute/link/link.cpp
 
-namespace xpute {
+namespace xpute::link {
 
 namespace {
-Clock installed_clock = nullptr;
+
+constexpr std::int32_t status(Errno e) noexcept {
+    return static_cast<std::int32_t>(e);
 }
 
-void set_clock(Clock clock) noexcept {
-    installed_clock = clock;
+// Whether `a` and `b` are one token.
+bool same(const Token &a, const Token &b) noexcept {
+    if (a.variant.index() != b.variant.index()) return false;
+    if (a.variant.index() == 0) return std::get<0>(a.variant).val == std::get<0>(b.variant).val;
+    return std::get<1>(a.variant).val == std::get<1>(b.variant).val;
+}
+
+// Whether `uri` starts with `prefix`.
+bool starts_with(std::span<const Token> uri, std::span<const Token> prefix) noexcept {
+    if (prefix.size() > uri.size()) return false;
+    for (std::size_t k = 0; k < prefix.size(); k++)
+        if (!same(uri[k], prefix[k])) return false;
+    return true;
+}
+
+// A copy of a packet, which its answer owns.
+std::optional<std::vector<std::uint8_t>> copy(std::optional<std::span<const std::uint8_t>> pkt) {
+    if (!pkt) return std::nullopt;
+    return std::vector<std::uint8_t>(pkt->begin(), pkt->end());
+}
+
+} // namespace
+
+void Side::mount(Handle h, std::vector<Token> prefix, Opener open) {
+    mounts_.emplace_back(h, std::move(prefix), std::move(open));
+}
+
+void Side::mount_named(Handle h, std::unique_ptr<Object> o) {
+    bool fresh = named_.emplace(h, std::move(o)).second;
+    ensure(fresh, Errno::eexist, h);
+}
+
+Result<Handle> Side::open(std::span<const Token> uri) {
+    Args args = Packet{8, [uri](Lower &w) { store_uri(w, 0, uri); }};
+    auto [result, data] = call(ROOT, OPEN, args);
+    return answer(result, data, [](Lift &r) { return r.get<std::uint32_t>(0); });
+}
+
+void Side::drop(Handle h) {
+    send(h, DROP, std::nullopt, nullptr);
+}
+
+std::pair<std::int32_t, std::optional<std::span<const std::uint8_t>>> Side::call(Handle h, Method m, const Args &args) {
+    auto reply = out(tag(), h, m, false, 0, args);
+    ensure(reply.first != status(Errno::einprogress), Errno::einprogress, h, m);
+    return reply;
+}
+
+Tag Side::send(Handle h, Method m, const Args &args, Answer answer) {
+    Tag t = tag();
+    if (answer) pending_.emplace(t, std::move(answer));
+    auto [result, data] = out(t, h, m, false, 0, args);
+    if (result != status(Errno::einprogress)) {
+        if (auto it = pending_.find(t); it != pending_.end()) {
+            Answer a = std::move(it->second);
+            pending_.erase(it);
+            due_.push_back(Due{std::move(a), result, copy(data)});
+        }
+    }
+    return t;
+}
+
+void Side::cancel(Tag t) {
+    if (pending_.contains(t)) send(ROOT, CANCEL, Packet{4, [t](Lower &w) { w.put<std::uint32_t>(0, t); }}, nullptr);
+}
+
+void Side::on_cancel(Tag t, std::function<void()> stop) {
+    cancels_.insert_or_assign(t, std::move(stop));
+}
+
+void Side::task_return(Tag t, std::int32_t result, const Data &data) {
+    cancels_.erase(t);
+    if (!crossing_) {
+        out(t, ROOT, 0, true, result, data);
+        return;
+    }
+    if (!data) {
+        completions_.push_back(Completion{t, result, std::nullopt});
+        return;
+    }
+    std::vector<std::uint8_t> buf(layout().cap - HDR_SZ);
+    Lower w(buf, data->fixed_sz);
+    data->write(w);
+    Result<std::size_t> n = w.finish();
+    if (!n) {
+        completions_.push_back(Completion{t, status(n.error().errnum), std::nullopt});
+        return;
+    }
+    buf.resize(*n);
+    completions_.push_back(Completion{t, result, std::move(buf)});
+}
+
+std::int32_t Side::recv(std::uint64_t at) {
+    std::uint32_t cap = layout().cap;
+    Frame f = Frame::at(at);
+    Result<std::optional<std::span<const std::uint8_t>>> pkt = f.pkt(at, cap);
+    if (f.res) {
+        if (auto it = pending_.find(f.tag); it != pending_.end()) {
+            Answer a = std::move(it->second);
+            pending_.erase(it);
+            due_.push_back(Due{std::move(a), f.result, pkt ? copy(*pkt) : std::nullopt});
+        }
+        return 0;
+    }
+    // The args and the answer lie in the frame's packet, the answer written
+    // once the args are read.
+    Lower w(mem::bytes(at + HDR_SZ, cap - HDR_SZ));
+    Frame words = f;
+    words.res = true;
+    words.result = pkt ? run(f.handle, f.method, f.tag, Lift((*pkt).value_or(std::span<const std::uint8_t>{})), w)
+                       : status(pkt.error().errnum);
+    // An answer past the cap is refused as a later one is (`out`).
+    Result<std::size_t> n = w.finish();
+    words.pkt_len = n ? static_cast<std::uint32_t>(*n) : 0;
+    if (!n) words.result = status(n.error().errnum);
+    words.lay(at);
+    return words.result;
+}
+
+void Side::run_due() {
+    while (!completions_.empty()) {
+        Completion c = std::move(completions_.front());
+        completions_.pop_front();
+        Args pkt;
+        if (c.pkt) {
+            const std::vector<std::uint8_t> &bytes = *c.pkt;
+            pkt = Packet{bytes.size(), [&bytes](Lower &w) {
+                             for (std::size_t k = 0; k < bytes.size(); k++) w.put<std::uint8_t>(k, bytes[k]);
+                         }};
+        }
+        out(c.tag, ROOT, 0, true, c.result, pkt);
+    }
+    while (!due_.empty()) {
+        Due d = std::move(due_.front());
+        due_.pop_front();
+        d.answer(d.result, std::move(d.data));
+    }
+}
+
+std::int32_t Side::run(Handle h, Method m, Tag tag, Lift args, Lower &ret) {
+    if (h == ROOT && m == OPEN) {
+        Result<Handle> o = opened(args);
+        if (!o) return status(o.error().errnum);
+        ret.start(4);
+        ret.put<std::uint32_t>(0, *o);
+        return 0;
+    }
+    if (h == ROOT && m == CANCEL) {
+        Tag t = args.get<std::uint32_t>(0);
+        if (!args.finish()) return status(Errno::ebadmsg);
+        if (auto it = cancels_.find(t); it != cancels_.end()) {
+            std::function<void()> stop = std::move(it->second);
+            cancels_.erase(it);
+            stop();
+        }
+        return 0;
+    }
+    if (m == DROP) return objects_.remove(h) ? 0 : status(Errno::ebadf);
+    // A named handle no interface is mounted under is no object there; an
+    // issued one no longer held is a bad handle. Nothing drops an object
+    // during its call: the host's drop comes only in an entry of its own.
+    if ((h & NAMED) != 0) {
+        auto it = named_.find(h);
+        if (it == named_.end()) return status(Errno::enoent);
+        return it->second->call(m, tag, args, ret);
+    }
+    std::unique_ptr<Object> *o = objects_.get(h);
+    if (o == nullptr) return status(Errno::ebadf);
+    return (*o)->call(m, tag, args, ret);
+}
+
+Result<Handle> Side::opened(Lift &args) {
+    std::vector<Token> uri = load_uri(args, 0);
+    if (Result<void> read = args.finish(); !read) return read.error();
+    // The longest matching mount wins, the first mounted of those as long.
+    const Opener *open = nullptr;
+    std::size_t longest = 0;
+    for (const auto &[i, prefix, o] : mounts_) {
+        if (starts_with(uri, prefix) && (open == nullptr || prefix.size() > longest)) {
+            open = &o;
+            longest = prefix.size();
+        }
+    }
+    if (open == nullptr) return make_error(Errno::enoent);
+    // A copy, as an opener may mount another.
+    Opener opener = *open;
+    Handle h = objects_.issue();
+    Result<std::unique_ptr<Object>> o = opener(uri, h);
+    if (!o) {
+        objects_.remove(h);
+        return o.error();
+    }
+    objects_.put(h, std::move(*o));
+    return h;
+}
+
+Tag Side::tag() noexcept {
+    Tag t = next_;
+    while (pending_.contains(t)) t++;
+    next_ = t + 1;
+    return t;
+}
+
+Result<void> Side::lay(std::uint64_t at, Frame words, const Args &pkt) {
+    std::uint32_t cap = layout().cap;
+    words.pkt_len = 0;
+    if (pkt) {
+        Lower w(mem::bytes(at + HDR_SZ, cap - HDR_SZ), pkt->fixed_sz);
+        pkt->write(w);
+        Result<std::size_t> n = w.finish();
+        if (!n) return n.error();
+        words.pkt_len = static_cast<std::uint32_t>(*n);
+    }
+    words.lay(at);
+    return {};
+}
+
+// Lays a frame in this side's box and crosses with it, and answers what the
+// callee laid there: its result, and its return data. A later answer past
+// the cap is answered EMSGSIZE with no data, so its request still hears;
+// args this side writes past it are a bug.
+std::pair<std::int32_t, std::optional<std::span<const std::uint8_t>>> Side::out(Tag tag, Handle h, Method m, bool res, std::int32_t result, const Args &pkt) {
+    Layout l = layout();
+    std::uint64_t at = out_box_(l);
+    Frame words{.tag = tag, .res = res, .handle = h, .method = m, .result = result, .pkt_len = 0};
+    if (Result<void> laid = lay(at, words, pkt); !laid) {
+        ensure(res, Errno::emsgsize, h, m);
+        words.result = status(laid.error().errnum);
+        ensure(lay(at, words, std::nullopt).ok(), Errno::emsgsize);
+    }
+    std::int32_t r = crossed([&] { return cross_(at); });
+    Frame f = Frame::at(at);
+    std::optional<std::span<const std::uint8_t>> data;
+    if (f.res && !res) {
+        if (auto p = f.pkt(at, l.cap); p) data = *p;
+    }
+    return {r, data};
+}
+
+std::vector<Token> uri(std::initializer_list<std::string_view> names) {
+    std::vector<Token> out;
+    for (std::string_view n : names) out.push_back(Token{Token::Str{std::string(n)}});
+    return out;
+}
+
+void store_uri(Lower &w, std::size_t at, std::span<const Token> uri) {
+    if (auto base = w.list(at, uri.size(), Token::SZ, Token::ALIGN))
+        for (std::size_t k = 0; k < uri.size(); k++) uri[k].store(w, *base + k * Token::SZ);
+}
+
+std::vector<Token> load_uri(Lift &r, std::size_t at) {
+    auto [base, len] = r.list(at, Token::SZ, Token::ALIGN);
+    std::vector<Token> uri;
+    uri.reserve(len);
+    for (std::size_t k = 0; k < len; k++) uri.push_back(Token::load(r, base + k * Token::SZ));
+    return uri;
+}
+
+Result<void> answer(std::int32_t result) noexcept {
+    if (result == 0) return {};
+    return make_error(or_bug(of_Errno(result), Errno::eproto));
+}
+
+} // namespace xpute::link
+
+// cpp/xpute/link/mem.cpp
+
+namespace xpute::link::mem {
+
+namespace {
+
+// The byte at `at`, as a pointer.
+std::uint8_t *ptr(std::uint64_t at) noexcept {
+    ensure(at <= UINTPTR_MAX, Errno::efault);
+    return reinterpret_cast<std::uint8_t *>(static_cast<std::uintptr_t>(at));
+}
+
+// The aligned word at `at` as an atomic.
+std::atomic_ref<std::uint32_t> atomic(std::uint64_t at) noexcept {
+    std::uint8_t *p = ptr(at);
+    ensure(reinterpret_cast<std::uintptr_t>(p) % std::atomic_ref<std::uint32_t>::required_alignment == 0, Errno::efault, at);
+    return std::atomic_ref<std::uint32_t>(*reinterpret_cast<std::uint32_t *>(p));
+}
+
+} // namespace
+
+std::span<std::uint8_t> bytes(std::uint64_t at, std::uint32_t len) noexcept {
+    return {ptr(at), len};
+}
+
+std::uint64_t detail::addr(const void *p) noexcept {
+    return reinterpret_cast<std::uintptr_t>(p);
+}
+
+std::uint32_t word(std::uint64_t at) noexcept {
+    std::uint32_t v;
+    std::memcpy(&v, ptr(at), 4);
+    return v;
+}
+
+void set_word(std::uint64_t at, std::uint32_t v) noexcept {
+    std::memcpy(ptr(at), &v, 4);
+}
+
+std::uint32_t load_acquire(std::uint64_t at) noexcept {
+    return atomic(at).load(std::memory_order_acquire);
+}
+
+void store_release(std::uint64_t at, std::uint32_t v) noexcept {
+    atomic(at).store(v, std::memory_order_release);
+}
+
+} // namespace xpute::link::mem
+
+// cpp/xpute/guest/clock.cpp
+
+namespace xpute::guest::clock {
+
+namespace {
+constexpr double NS_PER_MS = 1e6;
 }
 
 double now() noexcept {
-    return installed_clock != nullptr ? installed_clock() : 0.0;
+    return ms(or_bug(abi::clocks::monotonic_clock::now(), Errno::eproto));
 }
 
-} // namespace xpute
-
-// cpp/xpute/guest/hostcall.cpp
-
-namespace xpute {
-
-namespace {
-Hostcall installed_hostcall = nullptr;
+double ms(abi::clocks::monotonic_clock::Mark mark) noexcept {
+    return static_cast<double>(mark) / NS_PER_MS;
 }
 
-void set_hostcall(Hostcall hostcall) noexcept {
-    installed_hostcall = hostcall;
+std::uint64_t mark(double ms) noexcept {
+    return static_cast<std::uint64_t>(std::floor((ms > 0 ? ms : 0) * NS_PER_MS));
 }
 
-std::int32_t hostcall(std::uint32_t at) noexcept {
-    return installed_hostcall != nullptr ? installed_hostcall(at) : static_cast<std::int32_t>(Errno::enosys);
+std::uint64_t duration(double ms) noexcept {
+    return static_cast<std::uint64_t>(std::ceil((ms > 0 ? ms : 0) * NS_PER_MS));
 }
 
-} // namespace xpute
-
-// cpp/xpute/guest/ipc/ring.cpp
-
-namespace xpute {
-
-static bool power_of_two(std::uint32_t n) noexcept {
-    return n != 0 && (n & (n - 1)) == 0;
+double system() noexcept {
+    abi::clocks::system_clock::Instant t = or_bug(abi::clocks::system_clock::now(), Errno::eproto);
+    return static_cast<double>(t.seconds) * 1e3 + static_cast<double>(t.nanoseconds) / NS_PER_MS;
 }
 
-// Payloads are padded to XTP's word (`WORD_SZ`).
-static constexpr std::uint64_t padded(std::uint64_t n) noexcept {
-    return (n + xtp::WORD_SZ - 1) / xtp::WORD_SZ * xtp::WORD_SZ;
-}
+} // namespace xpute::guest::clock
 
-Ring::Ring(Memory mem, std::uint32_t at) noexcept
-    : mem_(mem), at_(at), cap_(header(ring::CAP)), slot_bytes_(header(ring::SLOT_BYTES)), slot_base_(header(ring::SLOT_BASE)) {
-    ensure(power_of_two(cap_), Errno::einval, cap_, at);
-}
+// cpp/xpute/guest/link.cpp
 
-Ring Ring::init(Memory mem, std::uint32_t at, std::uint32_t cap, std::uint32_t slot_base, std::uint32_t slot_bytes) noexcept {
-    ensure(power_of_two(cap), Errno::einval, cap);
-    ensure(power_of_two(slot_bytes) && slot_bytes % xtp::WORD_SZ == 0, Errno::einval, slot_bytes);
-    std::memset(mem.at(at), 0, ring_bytes(cap));
-    mem.set_word(at + 4 * ring::CAP, cap);
-    mem.set_word(at + 4 * ring::SLOT_BYTES, slot_bytes);
-    mem.set_word(at + 4 * ring::SLOT_BASE, slot_base);
-    return Ring(mem, at);
-}
-
-std::uint32_t Ring::slot_at(std::uint32_t pos) const noexcept {
-    return slot_base_ + (pos & (cap_ - 1)) * slot_bytes_;
-}
-
-void Ring::pad(std::uint32_t slot, std::uint32_t n) const noexcept {
-    std::memset(mem_.at(slot + n), 0, padded(n) - n);
-}
-
-void Ring::publish(std::uint32_t tag, std::uint32_t cmd, std::uint32_t flags, std::int32_t result, std::uint32_t pkt_at) const noexcept {
-    std::uint32_t t = tail();
-    std::uint32_t f = at_ + 4 * entry_at(t);
-    mem_.set_word(f + 4 * frame::TAG, tag);
-    mem_.set_word(f + 4 * frame::CMD, frame::cmd_word(cmd, flags));
-    mem_.set_word(f + 4 * frame::RESULT, static_cast<std::uint32_t>(result));
-    mem_.set_word(f + 4 * frame::PKT, pkt_at);
-    // The frame is whole before the tail says so.
-    set_header(ring::TAIL, t + 1);
-}
-
-Errno Ring::push(std::uint32_t tag, std::uint32_t cmd, std::uint32_t flags, std::int32_t result, std::optional<std::span<const std::uint8_t>> pkt) const noexcept {
-    if (len() >= cap()) return Errno::eagain;
-    std::uint32_t pkt_at = 0;
-    if (pkt) {
-        if (padded(pkt->size()) > slot_bytes()) return Errno::emsgsize;
-        pkt_at = slot_at(tail());
-        auto n = static_cast<std::uint32_t>(pkt->size());
-        std::memcpy(mem_.at(pkt_at), pkt->data(), n);
-        pad(pkt_at, n);
-    }
-    publish(tag, cmd, flags, result, pkt_at);
-    return Errno::ok;
-}
-
-std::optional<Frame> Ring::peek() const noexcept {
-    if (empty()) return std::nullopt;
-    std::uint32_t f = at_ + 4 * entry_at(head());
-    std::uint32_t word = mem_.word(f + 4 * frame::CMD);
-    return Frame{
-        .tag = mem_.word(f + 4 * frame::TAG),
-        .cmd = frame::cmd_of(word),
-        .flags = frame::flags_of(word),
-        .result = static_cast<std::int32_t>(mem_.word(f + 4 * frame::RESULT)),
-        .pkt_at = mem_.word(f + 4 * frame::PKT),
-    };
-}
-
-Result<std::span<const std::uint8_t>> Ring::pkt(const Frame &f) const noexcept {
-    if (f.pkt_at == 0) return std::span<const std::uint8_t>();
-    std::uint32_t base = slot_base_, slot = slot_bytes_;
-    if (f.pkt_at < base) return marshal_error(Errno::ebadmsg);
-    std::uint64_t off = f.pkt_at - base;
-    if (off % slot != 0 || off + xtp::HDR_SZ > slots_bytes(cap(), slot)) return marshal_error(Errno::ebadmsg);
-    // The header, then the payload its second word names, to the word.
-    std::uint64_t n = padded(xtp::HDR_SZ + std::uint64_t{mem_.word(f.pkt_at + xtp::WORD_SZ)});
-    if (n > slot) return marshal_error(Errno::ebadmsg);
-    return std::span<const std::uint8_t>(mem_.at(f.pkt_at), static_cast<std::size_t>(n));
-}
-
-void Ring::advance() const noexcept {
-    ensure(!empty(), Errno::enotrecoverable);
-    set_header(ring::HEAD, head() + 1);
-}
-
-} // namespace xpute
-
-// cpp/xpute/guest/ipc/stream.cpp
-
-namespace xpute {
-
-Stream::Stream(Memory mem, std::uint32_t at, std::uint32_t words, std::uint32_t head) noexcept : mem_(mem), at_(at), words_(words), head_(head) {
-    ensure(head > END && head < words, Errno::einval, head, words);
-    mem_.set_word(at_ + WORD * END, 0);
-}
-
-std::uint32_t Stream::open(std::uint32_t op, std::uint32_t n, std::source_location from) noexcept {
-    std::uint32_t at = head_ + len_;
-    ensure(std::uint64_t{at} + 2 + n <= words_, Errno::enospc, words_ * WORD, 0, from);
-    len_ += 2 + n;
-    std::uint32_t off = at_ + WORD * at;
-    mem_.set_word(off, op);
-    mem_.set_word(off + WORD, n);
-    return off + 2 * WORD;
-}
-
-std::optional<std::uint32_t> Stream::reserve(std::uint32_t op, std::uint32_t n, std::source_location from) noexcept {
-    if (mark_.state == Mark::spilled) return std::nullopt;
-    if (mark_.state == Mark::open && std::uint64_t{left()} < (std::uint64_t{2} + n) * WORD) {
-        mark_.state = Mark::spilled;
-        return std::nullopt;
-    }
-    return open(op, n, from);
-}
-
-static std::uint32_t byte_words_of(std::optional<std::span<const std::uint8_t>> bytes) noexcept {
-    return static_cast<std::uint32_t>(record_words(0, bytes ? std::optional<std::uint64_t>{bytes->size()} : std::nullopt) - 2);
-}
-
-void Stream::record(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint32_t> tail,
-                    std::optional<std::span<const std::uint8_t>> bytes, std::source_location from) noexcept {
-    std::optional<std::uint32_t> w = reserve(op, static_cast<std::uint32_t>(args.size() + tail.size()) + byte_words_of(bytes), from);
-    if (!w) return;
-    fill(*w, args, tail, bytes);
-}
-
-std::optional<std::uint32_t> Stream::past(std::uint32_t op, std::span<const std::uint32_t> args,
-                                          std::optional<std::span<const std::uint8_t>> bytes) noexcept {
-    std::uint32_t n = static_cast<std::uint32_t>(args.size()) + byte_words_of(bytes);
-    std::uint32_t at = head_ + len_;
-    if (std::uint64_t{at} + 2 + n > words_) return std::nullopt;
-    std::uint32_t off = at_ + WORD * at;
-    mem_.set_word(off, op);
-    mem_.set_word(off + WORD, n);
-    fill(off + 2 * WORD, args, {}, bytes);
-    return off;
-}
-
-void Stream::fill(std::uint32_t w, std::span<const std::uint32_t> args, std::span<const std::uint32_t> tail,
-                  std::optional<std::span<const std::uint8_t>> bytes) noexcept {
-    auto a = static_cast<std::uint32_t>(args.size()), t = static_cast<std::uint32_t>(tail.size());
-    for (std::uint32_t i = 0; i < a; i++) mem_.set_word(w + WORD * i, args[i]);
-    for (std::uint32_t i = 0; i < t; i++) mem_.set_word(w + WORD * (a + i), tail[i]);
-    if (bytes) {
-        std::uint32_t byte_words = byte_words_of(bytes);
-        std::uint32_t k = w + WORD * (a + t);
-        mem_.set_word(k, static_cast<std::uint32_t>(bytes->size()));
-        if (byte_words > 1) mem_.set_word(k + WORD * (byte_words - 1), 0);
-        std::memcpy(mem_.at(k + WORD), bytes->data(), bytes->size());
-    }
-}
-
-void Stream::publish() noexcept {
-    mem_.set_word(at_ + WORD * END, len_);
-    len_ = 0;
-}
-
-} // namespace xpute
-
-// cpp/xpute/guest/ipc/sys.cpp
-
-namespace xpute {
-
-static std::span<const std::uint8_t> bytes_of(std::string_view s) noexcept {
-    return {reinterpret_cast<const std::uint8_t *>(s.data()), s.size()};
-}
-
-void Sys::openat(Fd fd, std::uint32_t root, std::uint32_t flags, std::string_view path) noexcept {
-    const std::array<std::uint32_t, OPENAT_ARGS> args{fd, root, flags};
-    stream_.record(sys::op::OPENAT, args, {}, bytes_of(path));
-}
-
-void Sys::read(Fd fd, std::span<std::uint8_t> dst) noexcept {
-    const std::array<std::uint32_t, READ_ARGS> args{fd, mem_.off_of(dst), static_cast<std::uint32_t>(dst.size())};
-    stream_.record(sys::op::READ, args);
-}
-
-void Sys::write(Fd fd, std::vector<std::uint8_t> bytes) noexcept {
-    const std::array<std::uint32_t, WRITE_ARGS> args{fd, mem_.off_of(std::span<const std::uint8_t>(bytes)), static_cast<std::uint32_t>(bytes.size())};
-    stream_.record(sys::op::WRITE, args);
-    held_.push_back(std::move(bytes));
-}
-
-void Sys::close(Fd fd) noexcept {
-    const std::array<std::uint32_t, CLOSE_ARGS> args{fd};
-    stream_.record(sys::op::CLOSE, args);
-}
-
-void Sys::call(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint8_t> bytes) noexcept {
-    ensure((op & sys::op::PROGRAM) != 0, Errno::einval, op);
-    stream_.record(op, args, {}, bytes);
-}
-
-Result<std::uint32_t> Sys::call_now(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint8_t> bytes) noexcept {
-    ensure((op & sys::op::PROGRAM) != 0, Errno::einval, op);
-    std::optional<std::uint32_t> at = stream_.past(op, args, bytes);
-    if (!at) return make_error(ErrorClass::fault, Errno::enospc);
-    return answer_of(xpute::hostcall(*at));
-}
-
-bool Sys::try_call(std::uint32_t op, std::span<const std::uint32_t> args, std::span<const std::uint8_t> bytes, std::uint32_t reserve) noexcept {
-    if (!stream_.fits(record_bytes(args.size(), bytes.size()), reserve)) return false;
-    call(op, args, bytes);
-    return true;
-}
-
-void Sys::abort(Errno errnum, const std::source_location &at, std::uint64_t a, std::uint64_t b) noexcept {
-    stream_.publish();
-    std::array<std::uint32_t, ABORT_ARGS> args{static_cast<std::uint32_t>(errnum), at.line(), at.column()};
-    for (auto [i, v] : {std::pair{sys::abort::A, a}, std::pair{sys::abort::B, b}}) {
-        args[i] = static_cast<std::uint32_t>(v);
-        args[i + 1] = static_cast<std::uint32_t>(v >> 32);
-    }
-    stream_.record(sys::op::ABORT, args, {}, bytes_of(at.file_name()));
-    stream_.publish();
-}
-
-} // namespace xpute
-
-// cpp/xpute/guest/ipc/toc.cpp
-
-namespace xpute {
-
-void write_toc(Memory mem, std::uint32_t at, std::uint32_t words, std::span<const Entry> entries) noexcept {
-    ensure(toc_words(static_cast<std::uint32_t>(entries.size())) <= words, Errno::enospc, entries.size());
-    for (std::size_t i = 0; i < entries.size(); i++) {
-        for (std::size_t j = 0; j < i; j++) {
-            ensure(entries[j].key != entries[i].key, Errno::einval, entries[i].key);
-        }
-    }
-    mem.set_word(at, toc::MAGIC);
-    mem.set_word(at + 4, toc::VERSION);
-    mem.set_word(at + 8, static_cast<std::uint32_t>(entries.size()));
-    mem.set_word(at + 12, 0);
-    std::uint32_t off = at + 4 * toc::HEAD;
-    for (const Entry &e : entries) {
-        mem.set_word(off, e.key);
-        mem.set_word(off + 4, e.val);
-        off += 8;
-    }
-}
-
-} // namespace xpute
-
-// cpp/xpute/guest/mem.cpp
-
-namespace xpute::mem {
-
-namespace {
-// Two words rather than a `Memory`, so they are set before any constructor
-// runs and a static that allocates finds them.
-std::uintptr_t core_base = 0;
-std::uintptr_t core_bytes = UINTPTR_MAX;
-} // namespace
-
-void set(std::uintptr_t base, std::uintptr_t bytes) noexcept {
-    core_base = base;
-    core_bytes = bytes;
-}
-
-Memory core() noexcept {
-    return Memory(core_base, core_bytes);
-}
-
-} // namespace xpute::mem
-
-// cpp/xpute/guest/mem/heap.cpp
-
-namespace xpute {
-
-namespace {
-// The platform's allocator is never a guest's: on wasm it links the libc that
-// prints its failures through WASI.
-Allocator installed_heap{nullptr, nullptr};
-} // namespace
-
-void set_heap(Allocator heap) noexcept {
-    installed_heap = heap;
-}
-
-Allocator heap() noexcept {
-    return installed_heap;
-}
-
-} // namespace xpute
-
-// cpp/xpute/guest/program.cpp
-
-namespace xpute {
-
-namespace program_detail {
-
-// The executor `boot` installs: each task resumed once a turn while it is
-// woken, a woken one asking for the next turn. Another installed in its place
-// (`set_executor`) runs the same tasks.
-class Tasks final : public Executor {
-  public:
-    bool spawn(std::coroutine_handle<> task, Priority) noexcept override {
-        woken_.push_back(task);
-        return true;
-    }
-
-    void wake(std::coroutine_handle<> task) noexcept override {
-        if (std::find(woken_.begin(), woken_.end(), task) == woken_.end()) woken_.push_back(task);
-    }
-
-    void poll() noexcept override {
-        std::vector<std::coroutine_handle<>> now = std::exchange(woken_, {});
-        for (std::coroutine_handle<> h : now) h.resume();
-    }
-
-    bool pending() const noexcept override { return !woken_.empty(); }
-
-  private:
-    std::vector<std::coroutine_handle<>> woken_;
-};
-
-// A read's buffer the host may still fill after its `Read` was destroyed: let
-// go once the turn `asked_turn` has passed.
-struct Left {
-    Bytes bytes;
-    std::uint32_t asked_turn;
-};
-
-struct Program {
-    Door door;
-    Sys sys;
-    Files<Read *, program::MOST_FILES> files{};
-    // The reads the host fills after the turn each asked in.
-    std::vector<Read *> reading{};
-    std::vector<Left> left{};
-    // Turns run since boot.
-    std::uint32_t turn = 0;
-    Tasks tasks{};
-
-    // An open answered: an errno ends its read, a size has the host fill a
-    // buffer of it after this turn.
-    void complete_open(const abi::SysOpened &opened) noexcept {
-        std::optional<Read *> owner = files.complete_open(sys, opened);
-        if (!owner) return;
-        Read &r = **owner;
-        if (opened.res < 0) {
-            r.ready(errno_of(opened.res).value_or(Errno::eio));
-            return;
-        }
-        // Kept in `r`, or in `left` once it is gone, until a later turn's rise.
-        Result<Bytes> bytes = files.read_whole(sys, opened.fd, static_cast<std::uint32_t>(opened.res));
-        if (!bytes) {
-            r.ready(bytes.error().errnum);
-            return;
-        }
-        r.bytes_ = std::move(*bytes);
-        r.got_ = Read::Got::reading;
-        r.asked_ = turn;
-        reading.push_back(&r);
-    }
-
-    // The reads the host filled after an earlier turn, ready; the buffers of
-    // those destroyed meanwhile, let go.
-    void rise() noexcept {
-        turn++;
-        std::erase_if(left, [this](const Left &l) { return turn > l.asked_turn; });
-        std::erase_if(reading, [this](Read *r) {
-            if (turn <= r->asked_) return false;
-            r->ready(Errno::ok);
-            return true;
-        });
-    }
-
-    // A read waits for the next turn.
-    bool waiting() const noexcept { return !reading.empty(); }
-};
-
-namespace {
-// Raw storage rather than a static `Program`, so nothing runs before the
-// module's first call or after its last.
-alignas(Program) std::byte program_storage[sizeof(Program)];
-Program *booted_program = nullptr;
-} // namespace
-
-const Door *door() noexcept {
-    return booted_program != nullptr ? &booted_program->door : nullptr;
-}
-
-} // namespace program_detail
-
-using program_detail::booted_program;
-using program_detail::Program;
-
-std::uint32_t boot(const Layout &layout, std::uint32_t data_end) noexcept {
-    Memory mem = mem::core();
-    std::uint32_t range = range_at(data_end);
-    auto at = [range](std::uint32_t off) { return range + off; };
-    Ring sq = Ring::init(mem, at(layout.sq_at()), layout.cap, at(layout.sq_slots_at()), layout.slot_bytes);
-    Ring cq = Ring::init(mem, at(layout.cq_at()), layout.cap, at(layout.cq_slots_at()), layout.slot_bytes);
-    const std::array<Entry, 3> entries{{
-        {toc::key::SQ, at(layout.sq_at())},
-        {toc::key::CQ, at(layout.cq_at())},
-        {toc::key::SYS, at(layout.sys_at())},
-    }};
-    write_toc(mem, range, toc_words(entries.size()), entries);
-    if (booted_program != nullptr) booted_program->~Program();
-    booted_program = new (program_detail::program_storage) Program{
-        .door = Door(sq, cq, layout.most_events),
-        .sys = Sys(mem, at(layout.sys_at()), layout.sys_words),
-    };
-    set_executor(booted_program->tasks);
-    // A stop published as the turn's one record.
-    stop::install([](Errno errnum, const std::source_location &at, std::uint64_t a, std::uint64_t b) {
-        if (booted_program != nullptr) booted_program->sys.abort(errnum, at, a, b);
-    });
-    return range;
-}
-
-Result<xtp::BranchCursor> Packet::fields() const noexcept {
-    std::optional<std::span<const std::uint8_t>> pkt = bytes();
-    if (!pkt) return marshal_error(Errno::ebadmsg);
-    Result<xtp::TreeReader> t = xtp::TreeReader::make(*pkt);
-    if (!t) return t.error();
-    return t->read_branch();
-}
-
-Result<double> Packet::number(std::uint32_t i) const noexcept {
-    Result<xtp::BranchCursor> f = fields();
-    if (!f) return f.error();
-    Result<xtp::Cursor> c = f->at(i);
-    if (!c) return c.error();
-    return c->get_number();
-}
-
-Result<std::string_view> Packet::str(std::uint32_t i) const noexcept {
-    Result<xtp::BranchCursor> f = fields();
-    if (!f) return f.error();
-    Result<xtp::Cursor> c = f->at(i);
-    if (!c) return c.error();
-    return c->get_str_ref();
-}
-
-Result<void> Turn::spawn(Task<> work) const noexcept {
-    if (::xpute::spawn(std::move(work), 0)) return {};
-    return make_error(ErrorClass::fault, Errno::eagain);
-}
-
-Read::Read(std::uint32_t root, std::string_view path) noexcept : root_(root) {
-    std::optional<Bytes> copy = Bytes::make(static_cast<std::uint32_t>(path.size()));
-    if (!copy) {
-        ready(Errno::enomem);
-        return;
-    }
-    path_ = std::move(*copy);
-    std::copy(path.begin(), path.end(), path_.data());
-}
-
-Read::Read(Read &&o) noexcept : root_(o.root_), path_(std::move(o.path_)), got_(o.got_), err_(o.err_), bytes_(std::move(o.bytes_)) {
-    // Awaited, it is named by its open and its waker.
-    ensure(o.got_ == Got::idle || o.got_ == Got::done, Errno::einval, static_cast<std::uint64_t>(o.got_));
-    o.got_ = Got::idle;
-}
-
-bool Read::open(Waker waker) noexcept {
-    if (booted_program == nullptr) {
-        ready(Errno::enxio);
-        return false;
-    }
-    Program &p = *booted_program;
-    std::string_view path(reinterpret_cast<const char *>(path_.data()), path_.size());
-    std::optional<Fd> fd = p.files.try_open(p.sys, root_, path, this);
-    if (!fd) {
-        ready(Errno::emfile);
-        return false;
-    }
-    fd_ = *fd;
-    got_ = Got::opening;
-    waker_ = waker;
-    return true;
-}
-
-void Read::ready(Errno err) noexcept {
-    got_ = Got::done;
-    err_ = err;
-    std::exchange(waker_, {}).wake();
-}
-
-Result<Bytes> Read::await_resume() noexcept {
-    if (err_ != Errno::ok) return make_error(ErrorClass::fault, err_);
-    return std::move(bytes_);
-}
-
-Read::~Read() {
-    if (booted_program == nullptr) return;
-    Program &p = *booted_program;
-    switch (got_) {
-    case Got::opening:
-        p.files.close(p.sys, fd_);
-        break;
-    case Got::reading:
-        std::erase(p.reading, this);
-        p.left.push_back(program_detail::Left{std::move(bytes_), asked_});
-        break;
-    case Got::idle:
-    case Got::done:
-        break;
-    }
-}
-
-double turn(std::span<const On> handlers) noexcept {
-    if (booted_program == nullptr) return NO_WAKE;
-    Program &p = *booted_program;
-    p.sys.rise();
-    p.rise();
-    p.door.drain(
-        [&p](const abi::SysOpened &opened) {
-            p.complete_open(opened);
-            return Outcome{};
-        },
-        [&p, handlers](std::uint32_t cmd, std::span<const std::uint8_t> pkt) {
-            for (const On &on : handlers) {
-                if (on.cmd != cmd) continue;
-                Turn cx(p.sys, p.door);
-                Result<std::int32_t> res = on.handler(cx, Packet(pkt));
-                return res ? Outcome{.val = *res} : Outcome{.err = res.error().errnum};
-            }
-            return Outcome{.err = Errno::enosys};
-        });
-    // The tasks reach the program through `booted_program` themselves.
-    ::xpute::poll();
-    p.sys.fall();
-    return p.door.pending() || p.waiting() || ::xpute::pending() ? 0.0 : NO_WAKE;
-}
-
+// A module takes the host's `link_out` under `env` (TS `link.ts` `imports`);
+// a native guest, from the host linked into its process.
 #ifdef __wasm__
-
-std::uint32_t boot_module(const Layout &layout, std::uint32_t stack_bytes) noexcept {
-    // The stack the module was linked with is the one the program declares.
-    ensure(wasm::stack_high() == stack_bytes, Errno::enotrecoverable, wasm::stack_high());
-    set_hostcall(wasm::hostcall);
-    set_clock(wasm::now);
-    return boot(layout, wasm::data_end());
-}
-
+extern "C" __attribute__((import_module("env"), import_name("link_out"))) std::int32_t link_out(std::uint64_t at);
+#else
+extern "C" std::int32_t link_out(std::uint64_t at);
 #endif
 
-} // namespace xpute
-
-// cpp/xpute/guest/sched/task.cpp
-
-namespace xpute {
+namespace xpute::guest {
 
 namespace {
-Executor *installed_executor = nullptr;
+
+// The guest's own side: it lays in its outbox, past the inbox, and crosses
+// by `link_out`. It is made by the first `init` and lasts as long as the
+// guest, so no constructor, guard or destructor of a static runs for it: a
+// module's would link the libc's, which reach WASI.
+link::Side *the_side = nullptr;
+
+link::Side &side() noexcept {
+    ensure(the_side != nullptr, Errno::enotrecoverable);
+    return *the_side;
 }
 
-void set_executor(Executor &executor) noexcept {
-    installed_executor = &executor;
+// Whether the guest is in an entry.
+bool entered = false;
+// The program's start and end of an entry (`init`).
+void (*enter_fn)() = [] {};
+bool (*end_fn)() = [] { return false; };
+
+// Starts an entry by the program's `enter`. Every entry ends by `leave`.
+void enter() {
+    ensure(!std::exchange(entered, true), Errno::ebusy);
+    enter_fn();
 }
 
-Executor *executor() noexcept {
-    return installed_executor;
+// Ends an entry: runs the answers due and the program's `end`, which answers
+// whether it left work, again until neither has work left, and ends the
+// entry.
+void leave() {
+    for (;;) {
+        side().run_due();
+        bool again = end_fn();
+        if (!again && !side().has_due()) break;
+    }
+    entered = false;
 }
 
-bool spawn(Task<> task, Priority priority) noexcept {
-    if (installed_executor == nullptr || !task) return false;
-    Task<>::Handle h = task.release();
-    h.promise().executor = installed_executor;
-    if (installed_executor->spawn(h, priority)) return true;
-    h.destroy();
-    return false;
+} // namespace
+
+std::uint64_t init(std::uint32_t cap, void (*enter)(), bool (*end)()) noexcept {
+    ensure(cap % 8 == 0 && cap >= link::HDR_SZ, Errno::einval, cap);
+    if (the_side == nullptr) the_side = new link::Side([](link::Layout l) { return l.inbox + l.cap; }, link_out);
+    // The layout (frame.json5 `LAYOUT`), then the inbox and the outbox, for as
+    // long as the guest runs.
+    std::size_t n = (4 * link::frame::LAYOUT::WORDS + 2 * cap) / 8;
+    auto *words = static_cast<std::uint64_t *>(std::pmr::get_default_resource()->allocate(n * 8, 8));
+    std::fill_n(words, n, 0);
+    std::uint64_t at = link::mem::addr(words[0]);
+    link::Layout l{at + 4 * link::frame::LAYOUT::WORDS, cap};
+    l.lay(at);
+    side().set_layout(l);
+    enter_fn = enter;
+    end_fn = end;
+    return at;
 }
 
-void poll() noexcept {
-    if (installed_executor != nullptr) installed_executor->poll();
+void boot(void (*boot)()) {
+    ensure(!std::exchange(entered, true), Errno::ebusy);
+    boot();
+    enter_fn();
+    leave();
 }
 
-bool pending() noexcept {
-    return installed_executor != nullptr && installed_executor->pending();
+std::int32_t recv() {
+    enter();
+    std::int32_t result = side().recv(side().layout().inbox);
+    leave();
+    return result;
 }
 
-} // namespace xpute
+void mount(link::Handle h, std::vector<link::Token> prefix, link::Opener open) {
+    side().mount(h, std::move(prefix), std::move(open));
+}
+
+void mount_named(link::Handle h, std::unique_ptr<link::Object> o) {
+    side().mount_named(h, std::move(o));
+}
+
+link::Handle add(std::unique_ptr<link::Object> o) {
+    return side().add(std::move(o));
+}
+
+Result<link::Handle> open(std::span<const link::Token> uri) {
+    return side().open(uri);
+}
+
+void drop(link::Handle h) {
+    side().drop(h);
+}
+
+std::pair<std::int32_t, std::optional<std::span<const std::uint8_t>>> call(link::Handle h, link::Method m, const link::Args &args) {
+    return side().call(h, m, args);
+}
+
+link::Tag send(link::Handle h, link::Method m, const link::Args &args, link::Answer answer) {
+    return side().send(h, m, args, std::move(answer));
+}
+
+void cancel(link::Tag t) {
+    side().cancel(t);
+}
+
+void on_cancel(link::Tag t, std::function<void()> stop) {
+    side().on_cancel(t, std::move(stop));
+}
+
+void task_return(link::Tag t, std::int32_t result, const link::Data &data) {
+    side().task_return(t, result, data);
+}
+
+bool in_guest() noexcept {
+    return entered && !side().crossing();
+}
+
+} // namespace xpute::guest
+
+// cpp/xpute/guest/log.cpp
+
+namespace xpute::guest {
+
+void log(abi::log::Level level, std::string_view context, std::string_view msg) noexcept {
+    (void)abi::log::log(level, context, msg);
+}
+
+} // namespace xpute::guest
 
 // cpp/xpute/guest/stop.cpp
 
-namespace xpute::stop {
+namespace xpute::guest::stop {
 
-namespace {
-Report installed_abort = nullptr;
-Hook installed_hook = nullptr;
-} // namespace
-
-void install(Report abort, Hook hook) noexcept {
-    installed_abort = abort;
-    installed_hook = hook;
-    set_report([](Errno errnum, const std::source_location &at, std::uint64_t a, std::uint64_t b) {
-        if (installed_hook != nullptr) installed_hook(Stop{errnum, at, a, b});
-        if (installed_abort != nullptr) installed_abort(errnum, at, a, b);
+void hook() noexcept {
+    set_report([](Errno errnum, const std::source_location &at, std::uint64_t n1, std::uint64_t n2, const char *msg) {
+        if (in_guest())
+            (void)abi::stop::stopped(static_cast<std::int32_t>(errnum), at.file_name(), at.line(), n1, n2, msg ? std::optional<std::string_view>(msg) : std::nullopt);
     });
 }
 
-} // namespace xpute::stop
-
-// cpp/xpute/gpu/encode.cpp
-
-namespace xpute::gpu::call {
-
-using detail::emit;
-using detail::f;
-using detail::flag;
-using detail::opt;
-using detail::u;
-
-static bool words(Stream &stream, std::uint32_t op, std::initializer_list<std::uint32_t> w) noexcept {
-    return emit(stream, op, [&](auto &s) { detail::words(s, w); });
-}
-
-static std::uint32_t off(Stream &stream, std::span<const std::uint8_t> bytes) noexcept { return stream.mem().off_of(bytes); }
-
-template <class S> static void buffer_write(S &s, Id buffer, std::uint32_t offset, std::span<const std::uint8_t> bytes) noexcept {
-    detail::words(s, {buffer, offset});
-    s.bytes(bytes);
-}
-
-bool write_buffer(Stream &stream, Id buffer, std::uint32_t offset, std::span<const std::uint8_t> bytes) noexcept {
-    return emit(stream, op::WRITE_BUFFER, [&](auto &s) { buffer_write(s, buffer, offset, bytes); });
-}
-
-std::uint64_t write_buffer_bytes(std::span<const std::uint8_t> bytes) noexcept {
-    return detail::record_size([&](auto &s) { buffer_write(s, 0, 0, bytes); });
-}
-
-bool write_buffer_at(Stream &stream, Id buffer, std::uint32_t offset, std::span<const std::uint8_t> bytes) noexcept {
-    return words(stream, op::WRITE_BUFFER_AT, {buffer, offset, off(stream, bytes), static_cast<std::uint32_t>(bytes.size())});
-}
-
-template <class S> static void texture_write(S &s, const TexelCopyTexture &place, std::array<std::uint32_t, 2> layout, std::array<std::uint32_t, 3> size) noexcept {
-    detail::texture_place(s, place);
-    detail::words(s, {layout[0], layout[1]});
-    detail::extent(s, size);
-}
-
-bool write_texture(Stream &stream, const TexelCopyTexture &place, std::array<std::uint32_t, 2> layout, std::array<std::uint32_t, 3> size, std::span<const std::uint8_t> bytes) noexcept {
-    return emit(stream, op::WRITE_TEXTURE, [&](auto &s) {
-        texture_write(s, place, layout, size);
-        s.bytes(bytes);
-    });
-}
-
-std::uint64_t write_texture_bytes(std::span<const std::uint8_t> bytes) noexcept {
-    const TexelCopyTexture place{.texture = 0, .mip = 0, .origin = {0, 0, 0}, .aspect = TextureAspect::all};
-    return detail::record_size([&](auto &s) {
-        texture_write(s, place, {0, 0}, {0, 0, 0});
-        s.bytes(bytes);
-    });
-}
-
-bool write_texture_at(Stream &stream, const TexelCopyTexture &place, std::array<std::uint32_t, 2> layout, std::array<std::uint32_t, 3> size, std::span<const std::uint8_t> bytes) noexcept {
-    std::uint32_t at = off(stream, bytes);
-    return emit(stream, op::WRITE_TEXTURE_AT, [&](auto &s) {
-        texture_write(s, place, layout, size);
-        detail::words(s, {at, static_cast<std::uint32_t>(bytes.size())});
-    });
-}
-
-bool copy_external_image(Stream &stream, const TexelCopyTexture &to, bool flip_y, bool premultiplied, std::span<const std::uint8_t> image, std::uint32_t &word, std::uint32_t ticket) noexcept {
-    word = ticket;
-    std::uint32_t image_at = off(stream, image), word_at = stream.mem().off_of(&word);
-    return emit(stream, op::COPY_EXTERNAL_IMAGE, [&](auto &s) {
-        detail::texture_place(s, to);
-        detail::words(s, {flag(flip_y), flag(premultiplied), image_at, static_cast<std::uint32_t>(image.size()), word_at, ticket});
-    });
-}
-
-bool copy_buffer_to_buffer(Stream &stream, Id encoder, std::array<std::uint32_t, 2> from, std::array<std::uint32_t, 2> to, std::uint32_t size) noexcept {
-    return words(stream, op::COPY_BUFFER_TO_BUFFER, {encoder, from[0], from[1], to[0], to[1], size});
-}
-
-bool copy_buffer_to_texture(Stream &stream, Id encoder, const TexelCopyBuffer &from, const TexelCopyTexture &to, std::array<std::uint32_t, 3> size) noexcept {
-    return emit(stream, op::COPY_BUFFER_TO_TEXTURE, [&](auto &s) {
-        s.word(encoder);
-        detail::buffer_layout(s, from);
-        detail::texture_place(s, to);
-        detail::extent(s, size);
-    });
-}
-
-bool copy_texture_to_buffer(Stream &stream, Id encoder, const TexelCopyTexture &from, const TexelCopyBuffer &to, std::array<std::uint32_t, 3> size) noexcept {
-    return emit(stream, op::COPY_TEXTURE_TO_BUFFER, [&](auto &s) {
-        s.word(encoder);
-        detail::texture_place(s, from);
-        detail::buffer_layout(s, to);
-        detail::extent(s, size);
-    });
-}
-
-bool copy_texture_to_texture(Stream &stream, Id encoder, const TexelCopyTexture &from, const TexelCopyTexture &to, std::array<std::uint32_t, 3> size) noexcept {
-    return emit(stream, op::COPY_TEXTURE_TO_TEXTURE, [&](auto &s) {
-        s.word(encoder);
-        detail::texture_place(s, from);
-        detail::texture_place(s, to);
-        detail::extent(s, size);
-    });
-}
-
-bool clear_buffer(Stream &stream, Id encoder, Id buffer, std::uint32_t offset, std::optional<std::uint32_t> size) noexcept {
-    return words(stream, op::CLEAR_BUFFER, {encoder, buffer, offset, opt(size)});
-}
-
-bool resolve_query_set(Stream &stream, Id encoder, Id query_set, std::uint32_t first, std::uint32_t count, Id buffer, std::uint32_t offset) noexcept {
-    return words(stream, op::RESOLVE_QUERY_SET, {encoder, query_set, first, count, buffer, offset});
-}
-
-bool set_pipeline(Stream &stream, Id pass, Id pipeline) noexcept { return words(stream, op::SET_PIPELINE, {pass, pipeline}); }
-
-bool set_bind_group(Stream &stream, Id pass, std::uint32_t index, Id group, std::span<const std::uint32_t> dynamic_offsets) noexcept {
-    return emit(stream, op::SET_BIND_GROUP, [&](auto &s) {
-        detail::words(s, {pass, index, group, static_cast<std::uint32_t>(dynamic_offsets.size())});
-        for (std::uint32_t o : dynamic_offsets) s.word(o);
-    });
-}
-
-bool set_vertex_buffer(Stream &stream, Id pass, std::uint32_t slot, Id buffer, std::uint32_t offset, std::optional<std::uint32_t> size) noexcept {
-    return words(stream, op::SET_VERTEX_BUFFER, {pass, slot, buffer, offset, opt(size)});
-}
-
-bool set_index_buffer(Stream &stream, Id pass, Id buffer, IndexFormat format, std::uint32_t offset, std::optional<std::uint32_t> size) noexcept {
-    return words(stream, op::SET_INDEX_BUFFER, {pass, buffer, u(format), offset, opt(size)});
-}
-
-bool set_viewport(Stream &stream, Id pass, std::array<float, 4> rect, std::array<float, 2> depth) noexcept {
-    return words(stream, op::SET_VIEWPORT, {pass, f(rect[0]), f(rect[1]), f(rect[2]), f(rect[3]), f(depth[0]), f(depth[1])});
-}
-
-bool set_scissor(Stream &stream, Id pass, std::array<std::uint32_t, 4> rect) noexcept { return words(stream, op::SET_SCISSOR, {pass, rect[0], rect[1], rect[2], rect[3]}); }
-
-bool set_blend_constant(Stream &stream, Id pass, std::array<float, 4> rgba) noexcept {
-    return words(stream, op::SET_BLEND_CONSTANT, {pass, f(rgba[0]), f(rgba[1]), f(rgba[2]), f(rgba[3])});
-}
-
-bool set_stencil_reference(Stream &stream, Id pass, std::uint32_t reference) noexcept { return words(stream, op::SET_STENCIL_REFERENCE, {pass, reference}); }
-
-bool draw(Stream &stream, Id pass, std::uint32_t vertices, std::uint32_t instances, std::uint32_t first_vertex, std::uint32_t first_instance) noexcept {
-    return words(stream, op::DRAW, {pass, vertices, instances, first_vertex, first_instance});
-}
-
-bool draw_indexed(Stream &stream, Id pass, std::uint32_t indices, std::uint32_t instances, std::uint32_t first_index, std::int32_t base_vertex, std::uint32_t first_instance) noexcept {
-    return words(stream, op::DRAW_INDEXED, {pass, indices, instances, first_index, static_cast<std::uint32_t>(base_vertex), first_instance});
-}
-
-bool draw_indirect(Stream &stream, Id pass, Id buffer, std::uint32_t offset) noexcept { return words(stream, op::DRAW_INDIRECT, {pass, buffer, offset}); }
-
-bool draw_indexed_indirect(Stream &stream, Id pass, Id buffer, std::uint32_t offset) noexcept { return words(stream, op::DRAW_INDEXED_INDIRECT, {pass, buffer, offset}); }
-
-bool dispatch(Stream &stream, Id pass, std::array<std::uint32_t, 3> workgroups) noexcept {
-    return words(stream, op::DISPATCH, {pass, workgroups[0], workgroups[1], workgroups[2]});
-}
-
-bool dispatch_indirect(Stream &stream, Id pass, Id buffer, std::uint32_t offset) noexcept { return words(stream, op::DISPATCH_INDIRECT, {pass, buffer, offset}); }
-
-bool map_async(Stream &stream, Id buffer, std::uint32_t offset, std::span<std::uint8_t> into, std::uint32_t &word, std::uint32_t ticket) noexcept {
-    word = ticket;
-    Memory mem = stream.mem();
-    return words(stream, op::MAP_ASYNC, {buffer, offset, static_cast<std::uint32_t>(into.size()), mem.off_of(into), mem.off_of(&word), ticket});
-}
-
-bool queue_done(Stream &stream, std::uint32_t &word, std::uint32_t ticket) noexcept {
-    word = ticket;
-    return words(stream, op::QUEUE_DONE, {stream.mem().off_of(&word), ticket});
-}
-
-bool configure(Stream &stream, std::uint32_t surface, std::optional<TextureFormat> format, std::uint32_t usage, CanvasAlphaMode alpha) noexcept {
-    return words(stream, op::CONFIGURE, {surface, format ? u(*format) : SURFACE_PREFERRED, usage, u(alpha)});
-}
-
-bool resize(Stream &stream, std::uint32_t surface, std::array<std::uint32_t, 2> size) noexcept { return words(stream, op::RESIZE, {surface, size[0], size[1]}); }
-
-bool device(Stream &stream, std::span<std::uint32_t> into) noexcept {
-    return words(stream, op::DEVICE, {stream.mem().off_of(into), static_cast<std::uint32_t>(into.size())});
-}
-
-} // namespace xpute::gpu::call
+} // namespace xpute::guest::stop

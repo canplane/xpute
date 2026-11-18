@@ -1,8 +1,9 @@
 // cpp/xpute/kit/math/rng.32.hpp
 
-// The 32-bit family, rng.64.hpp's counterpart in u32 alone, gpu-portable since
-// WebGPU has no 64-bit integer: Murmur3's finalizer, a seed derived through
-// it, and a stream that draws it over a Weyl sequence.
+// The 32-bit family is the counterpart of rng.64.hpp in `u32` arithmetic alone:
+// WebGPU has no 64-bit integer, so a shader can compute these same numbers. The
+// family holds Murmur3's finalizer, a seed derived through it, and a stream
+// that applies it to a Weyl sequence.
 
 #pragma once
 
@@ -19,7 +20,7 @@ constexpr std::uint32_t mix32(std::uint32_t x) noexcept {
     return z ^ z >> 16;
 }
 
-constexpr std::uint32_t derive_seed_u32(std::uint32_t base, std::uint32_t tag) noexcept {
+constexpr std::uint32_t seed_mix32(std::uint32_t base, std::uint32_t tag) noexcept {
     return mix32(base ^ tag);
 }
 

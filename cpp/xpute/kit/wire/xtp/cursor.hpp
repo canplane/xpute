@@ -1,8 +1,9 @@
 // cpp/xpute/kit/wire/xtp/cursor.hpp
 
-// Cursors over a packet; what a read hands back is a view of the packet's
-// bytes, so the packet must outlive it. The packet need not be aligned in
-// memory, but its nodes must be aligned within it.
+// This is the read side of XTP: cursors over a packet. What a read returns
+// points into the packet's bytes, so the packet must outlive it. The packet
+// need not be aligned in memory, since every number is copied out of it, but
+// each node must be aligned within the packet.
 
 #pragma once
 
@@ -27,9 +28,9 @@ struct Null {
     bool operator==(const Null &) const = default;
 };
 
-template <class T> class Elements {
+template <class T> class ArrayView {
   public:
-    Elements(std::span<const std::uint8_t> bytes) noexcept : bytes_(bytes) {}
+    ArrayView(std::span<const std::uint8_t> bytes) noexcept : bytes_(bytes) {}
     std::uint32_t size() const noexcept { return static_cast<std::uint32_t>(bytes_.size() / sizeof(T)); }
     T operator[](std::uint32_t i) const noexcept { return load<T>(bytes_.data() + i * sizeof(T)); }
 
@@ -41,10 +42,10 @@ struct Array {
     SequenceType type;
     std::span<const std::uint8_t> bytes;
 
-    template <class T> Elements<T> elements() const noexcept { return bytes; }
+    template <class T> ArrayView<T> elements() const noexcept { return bytes; }
 };
 
-// Low bit first.
+// A bitset read in place: bit `i` is bit `i % 8` of byte `i / 8`.
 struct Bitset {
     std::span<const std::uint8_t> packed;
     std::uint32_t len;
@@ -52,7 +53,7 @@ struct Bitset {
     bool operator[](std::uint32_t i) const noexcept { return (packed[i >> 3] >> (i & 7)) & 1; }
 };
 
-struct Strs {
+struct StrList {
     std::span<const std::uint8_t> offs;
     std::span<const std::uint8_t> blob;
     std::uint32_t len;
@@ -78,9 +79,9 @@ struct Strs {
         bool operator==(const iterator &o) const noexcept { return i_ == o.i_; }
 
       private:
-        friend struct Strs;
-        iterator(const Strs *s, std::uint32_t i) noexcept : s_(s), i_(i) {}
-        const Strs *s_;
+        friend struct StrList;
+        iterator(const StrList *s, std::uint32_t i) noexcept : s_(s), i_(i) {}
+        const StrList *s_;
         std::uint32_t i_;
     };
     iterator begin() const noexcept { return iterator(this, 0); }
@@ -91,7 +92,7 @@ class BranchCursor;
 template <class Alloc> struct DeepValue;
 
 using Value = std::variant<Null, bool, std::uint8_t, std::int8_t, std::uint16_t, std::int16_t, std::uint32_t, std::int32_t, std::uint64_t, std::int64_t, float,
-                           double, std::string_view, Array, Bitset, Strs, BranchCursor>;
+                           double, std::string_view, Array, Bitset, StrList, BranchCursor>;
 
 class Cursor {
   public:
@@ -105,26 +106,21 @@ class Cursor {
 
     Result<Value> get() const noexcept;
 
-    template <class T> Result<Elements<T>> get_array() const noexcept {
-        if (is_null() || type_ != type_of(ARRAY_OF<T>)) return marshal_error(Errno::ebadmsg);
+    template <class T> Result<ArrayView<T>> get_array() const noexcept {
+        if (is_null() || type_ != type_of(ARRAY_OF<T>)) return make_error(Errno::ebadmsg);
         Result<Array> a = array(sizeof(T));
         if (!a) return a.error();
-        return Elements<T>(a->bytes);
+        return ArrayView<T>(a->bytes);
     }
 
     Result<std::uint64_t> get_u64() const noexcept;
-    Result<std::int64_t> get_i64() const noexcept;
     Result<bool> get_bool() const noexcept;
     Result<std::string_view> get_str_ref() const noexcept;
-    template <class Alloc = std::allocator<char>> Result<std::basic_string<char, std::char_traits<char>, Alloc>> get_str(const Alloc &alloc = Alloc()) const {
-        Result<std::string_view> s = get_str_ref();
-        if (!s) return s.error();
-        return std::basic_string<char, std::char_traits<char>, Alloc>(*s, alloc);
-    }
-    Result<Strs> get_strs() const noexcept;
+    Result<StrList> get_strs() const noexcept;
     template <class Alloc = std::allocator<std::byte>> Result<DeepValue<Alloc>> get_deep(const Alloc &alloc = Alloc()) const;
 
-    // Not for 64-bit integers, which a double cannot hold exactly.
+    // Any number type a double holds exactly. A 64-bit integer is refused
+    // (EBADMSG), even when its value would fit.
     Result<double> get_number() const noexcept;
 
   private:
@@ -141,10 +137,10 @@ class Cursor {
     Result<Array> array(std::uint32_t elem) const noexcept;
     Result<Bitset> bitset() const noexcept;
     Result<std::string_view> str() const noexcept;
-    Result<Strs> strs() const noexcept;
+    Result<StrList> strs() const noexcept;
 
     std::span<const std::uint8_t> pkt_;
-    // 0 for an absent node; no node can start there.
+    // 0 for an absent node, since no node can start inside the header.
     std::uint32_t base_;
     NodeType type_;
     std::uint32_t len_;
@@ -185,7 +181,8 @@ class BranchCursor {
     friend class Cursor;
     explicit BranchCursor(Cursor node) noexcept : node_(node) {}
 
-    // Where child `idx`'s extent ends: the next present sibling's base, or this branch's end.
+    // Where child `idx`'s extent ends: at the next present sibling's start, or
+    // else at this branch's end, where its packet slice ends.
     std::uint32_t end_of(std::uint32_t idx) const noexcept;
 
     Cursor node_;

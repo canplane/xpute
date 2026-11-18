@@ -1,0 +1,8 @@
+# The toolchain is pinned to the patch, so that a toolchain release cannot turn
+# a lint on under it.
+[toolchain]
+channel = "1.100.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+# A guest's module, and Android, which the native crates are linted for.
+targets = ["wasm32-unknown-unknown", "aarch64-linux-android"]

@@ -7,8 +7,8 @@
 #include <string_view>
 #include <vector>
 
-#include "xpute/kit/golden.hpp"
-#include "xpute/kit/test.hpp"
+#include "dev/test/golden.hpp"
+#include "dev/test/test.hpp"
 #include "encoding.hpp"
 #include "json.hpp"
 
@@ -30,13 +30,13 @@ XPUTE_TEST(json_in_place_read) {
     std::optional<JsonValue> doc = read_json(R"( {"a": [1, -2.5e1, true, null, "x\"y"], "b": {"k": "\uD83D\uDE00 \u00e9\n"}, "a": "last"} )");
     XPUTE_CHECK(doc && doc->type_of() == JsonType::object);
     XPUTE_CHECK(doc->get("a")->as_str()->eq_str("last"));
-    JsonFields fields = doc->fields();
+    JsonFieldIter fields = doc->fields();
     JsonValue first = fields.next()->second;
     std::vector<JsonType> kinds;
-    JsonItems items = first.items();
+    JsonItemIter items = first.items();
     while (auto item = items.next()) kinds.push_back(item->type_of());
     XPUTE_CHECK((kinds == std::vector<JsonType>{JsonType::number, JsonType::number, JsonType::boolean, JsonType::null, JsonType::string}));
-    XPUTE_CHECK_EQ(*first.at(1)->as_f64(), -25.0, "a number reads as the host reads it");
+    XPUTE_CHECK_EQ(*first.at(1)->as_f64(), -25.0, "a number reads as the runtime reads it");
     XPUTE_CHECK_EQ(*first.at(2)->as_bool(), true, "true");
     XPUTE_CHECK(first.at(3)->is_null());
     JsonStr q = *first.at(4)->as_str();
@@ -52,24 +52,24 @@ XPUTE_TEST(json_in_place_read) {
     XPUTE_CHECK(!read_json(std::string(200, '[') + std::string(200, ']')));
 }
 
-XPUTE_TEST(json_matches_host_parse) {
-    Golden v = Golden::load("spec/golden/codec/json.tsv");
+XPUTE_TEST(json_matches_runtime_parse) {
+    Golden v = Golden::load("kit/spec/golden/codec/json.tsv");
     v.each("grammar", [&](const std::string &k) {
         std::string got = read_json(text_of(v, k + ".text")) ? "json" : "refused";
-        XPUTE_CHECK_EQ(got, v.s(k + ".read"), "a text judged JSON otherwise than the host judges it");
+        XPUTE_CHECK_EQ(got, v.s(k + ".read"), "a text judged JSON otherwise than the runtime judges it");
     });
 }
 
 XPUTE_TEST(json_depth_limit) {
-    Golden v = Golden::load("spec/golden/codec/json.tsv");
+    Golden v = Golden::load("kit/spec/golden/codec/json.tsv");
     std::uint64_t most = v.u64("depth.most");
     auto nested = [](std::uint64_t n) { return std::string(n, '[') + "0" + std::string(n, ']'); };
     XPUTE_CHECK(read_json(nested(most)).has_value());
     XPUTE_CHECK(!read_json(nested(most + 1)).has_value());
 }
 
-XPUTE_TEST(json_big_number_as_host) {
-    Golden v = Golden::load("spec/golden/codec/json.tsv");
+XPUTE_TEST(json_big_number_as_runtime) {
+    Golden v = Golden::load("kit/spec/golden/codec/json.tsv");
     v.each("number", [&](const std::string &k) {
         std::optional<double> n = read_json(v.s(k + ".text"))->as_f64();
         XPUTE_CHECK(n.has_value());

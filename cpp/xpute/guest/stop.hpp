@@ -1,34 +1,18 @@
 // cpp/xpute/guest/stop.hpp
 
-// How a guest stops: a broken invariant (`bug`), published to the host as the
-// turn's one record (what `stop::install` is given, the guest's `Sys::abort`)
-// and told to the hook of a form whose process dies with the guest. C++ has
-// no panic of its own: what libc++ aborts on is a bug (kit status/bug.cpp).
+// The guest's report of its own failures to the host, by the stop the host
+// implements (`wit/stop/stop.wit`), as `xpute-guest`'s `stop.rs` is a Rust
+// guest's.
 
 #pragma once
 
-#include <cstdint>
-#include <source_location>
+namespace xpute::guest::stop {
 
-#include "xpute/kit/status/bug.hpp"
-#include "xpute/kit/status/errno.spec.hpp"
+// Tells the host a bug in the guest's own code, with its message where it has
+// one, by its stop, before the guest stops; `XPUTE_LINK` runs it as the
+// guest's first export starts, so that it covers the guest's whole run. A bug outside an entry, in `init` before the
+// host can hear a stop, or while the guest is out on `link_out`, is not told
+// (`in_guest`): the trap tells it.
+void hook() noexcept;
 
-namespace xpute::stop {
-
-// Numbers only: formatting is the hook's.
-struct Stop {
-    Errno errnum;
-    const std::source_location &at;
-    std::uint64_t a;
-    std::uint64_t b;
-};
-
-// Where a form whose process dies with the guest says why: no host is left to
-// run the record.
-using Hook = void (*)(const Stop &);
-
-// Installs the bug reporter, once at boot: `abort` publishes the record,
-// `hook` is the form's, none where the host outlives the guest (a page).
-void install(Report abort, Hook hook = nullptr) noexcept;
-
-} // namespace xpute::stop
+} // namespace xpute::guest::stop

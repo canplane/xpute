@@ -7,8 +7,8 @@
 #include <vector>
 
 #include "xpute/kit/codec/encoding.hpp"
-#include "xpute/kit/golden.hpp"
-#include "xpute/kit/test.hpp"
+#include "dev/test/golden.hpp"
+#include "dev/test/test.hpp"
 #include "tlv.hpp"
 
 using namespace xpute;
@@ -30,7 +30,8 @@ std::string js_number(double x) {
     return std::string(buf, r.ptr);
 }
 
-// A read value as the TypeScript prints it: `typeof`, a colon, the value.
+// A value in the golden record's text, which is how the TypeScript test prints
+// one: its `typeof`, a colon, the value.
 std::string show(const tlv::Value &v) {
     return std::visit(
         [](const auto &x) -> std::string {
@@ -39,7 +40,7 @@ std::string show(const tlv::Value &v) {
             else if constexpr (std::is_same_v<T, std::uint64_t> || std::is_same_v<T, std::int64_t>) return "bigint:" + std::to_string(x);
             else if constexpr (std::is_same_v<T, float> || std::is_same_v<T, double>) return "number:" + js_number(static_cast<double>(x));
             else if constexpr (std::is_same_v<T, tlv::Str>) return "string:" + std::string(x.text);
-            else if constexpr (std::is_same_v<T, tlv::Bytes>) return "bytes:" + hex(x.data);
+            else if constexpr (std::is_same_v<T, tlv::Blob>) return "bytes:" + hex(x.data);
             else return "number:" + std::to_string(x);
         },
         v);
@@ -47,9 +48,8 @@ std::string show(const tlv::Value &v) {
 
 } // namespace
 
-// Across a protocol: the bytes are the other languages', to the last one.
 XPUTE_TEST(tlv_matches_other_languages) {
-    Golden v = Golden::load("spec/golden/wire/tlv.tsv");
+    Golden v = Golden::load("kit/spec/golden/wire/tlv.tsv");
     std::vector<std::uint8_t> buf;
     tlv::Writer w(buf);
     const std::uint8_t three[] = {9, 8, 7};
@@ -67,7 +67,7 @@ XPUTE_TEST(tlv_matches_other_languages) {
         -1.5,
         true,
         tlv::Str{"€€"},
-        tlv::Bytes{three},
+        tlv::Blob{three},
         true,
         std::int32_t{5},
         std::int32_t{-2147483647 - 1},
@@ -77,21 +77,22 @@ XPUTE_TEST(tlv_matches_other_languages) {
         std::numeric_limits<double>::quiet_NaN(),
         std::numeric_limits<std::int64_t>::min(),
         tlv::Str{"s"},
-        tlv::Bytes{one},
+        tlv::Blob{one},
     };
     XPUTE_CHECK(w.write_all(vals).ok());
     const std::vector<std::uint8_t> &pkt = w.finish();
-    XPUTE_CHECK_EQ(hex(pkt), v.s("packet"), "the packet is not the other languages' bytes");
+    XPUTE_CHECK_EQ(hex(pkt), v.s("pkt"), "the packet is not the other languages' bytes");
 
     std::vector<tlv::Value> read;
     XPUTE_CHECK(tlv::Reader(pkt).read_all(read).ok());
     XPUTE_CHECK_EQ(read.size(), v.len("read"), "read back a different count");
     for (std::size_t j = 0; j < read.size(); j++) XPUTE_CHECK_EQ(show(read[j]), v.s("read." + std::to_string(j)), ("read." + std::to_string(j)).c_str());
 
-    // How a sequence stops: the values handed out before it did, then END
-    // read, the input run out at a boundary, or a fault.
+    // Each case gives the values read before the sequence stopped, then how it
+    // stopped: the tag `end` read, the input run out between two values, or a
+    // fault.
     v.each("end", [&](const std::string &k) {
-        std::vector<std::uint8_t> pkt = v.bytes(k + ".packet");
+        std::vector<std::uint8_t> pkt = v.bytes(k + ".pkt");
         tlv::Reader r(pkt);
         int n = 0;
         std::string stop;
@@ -110,7 +111,7 @@ XPUTE_TEST(tlv_matches_other_languages) {
         XPUTE_CHECK_EQ(std::to_string(n) + ":" + stop, v.s(k + ".read"), k.c_str());
     });
 
-    const std::string &huge_hex = v.s("huge.packet");
+    const std::string &huge_hex = v.s("huge.pkt");
     std::vector<std::uint8_t> huge(huge_hex.size() / 2);
     XPUTE_CHECK(hex_decode(huge_hex, huge).ok());
     std::vector<tlv::Value> none;

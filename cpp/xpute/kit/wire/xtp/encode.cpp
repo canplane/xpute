@@ -15,12 +15,12 @@ constexpr std::uint64_t word_up(std::uint64_t n) noexcept {
 } // namespace
 
 PacketWriter::PacketWriter(std::span<std::uint8_t> buf) noexcept : buf_(buf.first(std::min<std::size_t>(buf.size(), MAX_PKT_SZ))) {
-    if (buf_.size() < HDR_SZ) err_ = marshal_error(Errno::einval);
+    if (buf_.size() < HDR_SZ) err_ = make_error(Errno::einval);
     else std::memset(buf_.data(), 0, HDR_SZ);
 }
 
 std::optional<std::uint32_t> PacketWriter::spoil(Errno errnum) noexcept {
-    if (!err_) err_ = marshal_error(errnum);
+    if (!err_) err_ = make_error(errnum);
     return std::nullopt;
 }
 
@@ -35,10 +35,10 @@ std::optional<std::uint32_t> PacketWriter::reserve(std::uint32_t unit, std::uint
 }
 
 PacketWriter &PacketWriter::entry(std::optional<std::uint32_t> at, NodeType type) noexcept {
-    ensure(frame_.written < frame_.cnt, Errno::enospc, frame_.cnt);
-    if (frame_.root) root_type_ = type;
-    else if (!err_) set_word(buf_, frame_.base + WORD_SZ + frame_.written * WORD_SZ, at ? *at - frame_.base : 0, type);
-    frame_.written++;
+    ensure(table_.written < table_.cnt, Errno::enospc, table_.cnt);
+    if (table_.root) root_type_ = type;
+    else if (!err_) set_word(buf_, table_.base + WORD_SZ + table_.written * WORD_SZ, at ? *at - table_.base : 0, type);
+    table_.written++;
     return *this;
 }
 
@@ -88,7 +88,8 @@ std::optional<std::uint32_t> PacketWriter::str_commit(std::uint32_t len) noexcep
 
 PacketWriter &PacketWriter::str(std::optional<std::string_view> s) noexcept {
     if (!s) return entry(std::nullopt, type_of(SequenceType::str));
-    // Copied the way a string written in place goes in, so the two lay out alike.
+    // Copied through `str_with`, as a string written in place is, so that the
+    // two fit and lay out alike.
     return str_with([&](std::span<char> room) -> std::optional<std::size_t> {
         if (s->size() > room.size()) return std::nullopt;
         std::memcpy(room.data(), s->data(), s->size());
@@ -125,8 +126,9 @@ std::optional<std::uint32_t> PacketWriter::branch_open(std::uint32_t cnt) noexce
     return at;
 }
 
-// A branch ends on a word, so what follows it starts where the encoder
-// starts it.
+// A branch's extent ends on a word boundary, so a node after it starts on the
+// next word even when it needs less alignment. Every language pads the same
+// way, which keeps their bytes equal.
 std::optional<std::uint32_t> PacketWriter::branch_close(std::optional<std::uint32_t> at) noexcept {
     if (!at || err_) return at;
     std::uint64_t end = word_up(lim_);
@@ -139,8 +141,8 @@ std::optional<std::uint32_t> PacketWriter::branch_close(std::optional<std::uint3
 PacketWriter &PacketWriter::graft(std::span<const std::uint8_t> pkt) noexcept {
     std::optional<std::uint32_t> at;
     NodeType type = type_of(SpecialType::nil);
-    Result<std::uint32_t> magic = pkt.size() < HDR_SZ ? marshal_error(Errno::ebadmsg) : get_len(pkt, 0);
-    Result<Desc> d = magic && *magic == MAGIC ? get_desc(pkt, WORD_SZ) : marshal_error(Errno::ebadmsg);
+    Result<std::uint32_t> magic = pkt.size() < HDR_SZ ? make_error(Errno::ebadmsg) : get_len(pkt, 0);
+    Result<Desc> d = magic && *magic == MAGIC ? get_desc(pkt, WORD_SZ) : make_error(Errno::ebadmsg);
     if (!d) {
         spoil(Errno::ebadmsg);
     } else {
@@ -161,10 +163,10 @@ PacketWriter &PacketWriter::graft(std::span<const std::uint8_t> pkt) noexcept {
 }
 
 Result<std::uint32_t> PacketWriter::finish() noexcept {
-    ensure(frame_.root && frame_.written == frame_.cnt, Errno::enotrecoverable, frame_.cnt, frame_.written);
+    ensure(table_.root && table_.written == table_.cnt, Errno::enotrecoverable, table_.cnt, table_.written);
     if (err_) return *err_;
     std::uint64_t end = word_up(lim_);
-    if (end > buf_.size()) return marshal_error(Errno::eoverflow);
+    if (end > buf_.size()) return make_error(Errno::eoverflow);
     std::memset(buf_.data() + lim_, 0, end - lim_);
     set_word(buf_, 0, MAGIC, RESERVED);
     set_word(buf_, WORD_SZ, lim_ - HDR_SZ, root_type_);

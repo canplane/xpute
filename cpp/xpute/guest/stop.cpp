@@ -2,20 +2,22 @@
 
 #include "stop.hpp"
 
-namespace xpute::stop {
+#include <cstdint>
+#include <optional>
+#include <source_location>
+#include <string_view>
 
-namespace {
-Report installed_abort = nullptr;
-Hook installed_hook = nullptr;
-} // namespace
+#include "xpute/guest/abi/stop.hpp"
+#include "xpute/guest/link.hpp"
+#include "xpute/kit/status/bug.hpp"
 
-void install(Report abort, Hook hook) noexcept {
-    installed_abort = abort;
-    installed_hook = hook;
-    set_report([](Errno errnum, const std::source_location &at, std::uint64_t a, std::uint64_t b) {
-        if (installed_hook != nullptr) installed_hook(Stop{errnum, at, a, b});
-        if (installed_abort != nullptr) installed_abort(errnum, at, a, b);
+namespace xpute::guest::stop {
+
+void hook() noexcept {
+    set_report([](Errno errnum, const std::source_location &at, std::uint64_t n1, std::uint64_t n2, const char *msg) {
+        if (in_guest())
+            (void)abi::stop::stopped(static_cast<std::int32_t>(errnum), at.file_name(), at.line(), n1, n2, msg ? std::optional<std::string_view>(msg) : std::nullopt);
     });
 }
 
-} // namespace xpute::stop
+} // namespace xpute::guest::stop

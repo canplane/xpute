@@ -1,0 +1,15 @@
+[package]
+name = "xpute-gen-targets"
+description = "xpute's data specs' generation targets, which xpute's generating tool reads"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+xpute-gen.workspace = true
+
+[lints]
+workspace = true

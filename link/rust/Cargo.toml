@@ -1,0 +1,26 @@
+[package]
+name = "xpute-link"
+description = "xpute's link, the protocol both its sides run, and its code: the frame, the link machine, the handle table, a sent method as a future, the memory a method lends, and a packet's values in the Canonical ABI's layout"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+exclude = ["src/**/*.test.rs"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+xpute-kit.workspace = true
+
+[dev-dependencies]
+# The tests hold the frame and the packet to the golden records
+# (link/spec/golden), the record's bytes read back as hex.
+xpute-golden.workspace = true
+hex.workspace = true
+
+[lints]
+workspace = true

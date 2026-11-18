@@ -1,0 +1,9 @@
+# xpute's TypeScript packages, each a directory with its package.json: the
+# root's tests and scripts read them by name.
+packages:
+  - kit/ts
+  - link/ts
+  - host/ts
+  - runtime/web
+  - expo
+  - golden/ts

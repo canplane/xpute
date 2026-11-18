@@ -5,8 +5,8 @@
 #include <vector>
 
 #include "xpute/kit/codec/encoding.hpp"
-#include "xpute/kit/golden.hpp"
-#include "xpute/kit/test.hpp"
+#include "dev/test/golden.hpp"
+#include "dev/test/test.hpp"
 #include "view.hpp"
 
 using namespace xpute;
@@ -20,12 +20,12 @@ std::string hex(std::span<const std::uint8_t> bytes) {
     return out;
 }
 
-// The packet the tree `build` makes, encoded from a buffer of `init`, in hex,
-// or the errno it was refused with.
+// This answers the packet the tree `build` makes, encoded from a buffer of
+// `init`, in hex, or the errno it was refused with.
 template <class F> std::string encoded(F &&build, std::uint32_t init = 1024, std::optional<std::uint32_t> max = std::nullopt) {
     TreeView<> t;
     build(t);
-    auto pkt = encode<std::allocator<std::byte>>(t, TreeEncoderOptions{.init_cap = init, .max_cap = max});
+    auto pkt = encode<std::allocator<std::byte>>(t, TreeEncoderConfig{.init_cap = init, .max_cap = max});
     if (!pkt) return "errno:" + std::to_string(static_cast<int>(pkt.error().errnum));
     return hex(*pkt);
 }
@@ -33,16 +33,17 @@ template <class F> std::string encoded(F &&build, std::uint32_t init = 1024, std
 } // namespace
 
 XPUTE_TEST(xtp_tree_matches_other_languages) {
-    Golden v = Golden::load("spec/golden/wire/xtp/encode.tsv");
+    Golden v = Golden::load("kit/spec/golden/wire/xtp/encode.tsv");
     auto check = [&v](const char *name, auto &&build) {
         std::string k;
         v.each("", [&](const std::string &j) {
             if (v.s(j + ".name") == name) k = j;
         });
         XPUTE_CHECK(!k.empty());
-        XPUTE_CHECK_EQ(encoded(build), v.s(k + ".packet"), name);
-        // From a buffer that has to grow, the same bytes.
-        XPUTE_CHECK_EQ(encoded(build, 16), v.s(k + ".packet"), name);
+        XPUTE_CHECK_EQ(encoded(build), v.s(k + ".pkt"), name);
+        // A first buffer too small for the packet must give the same bytes
+        // once it has grown.
+        XPUTE_CHECK_EQ(encoded(build, 16), v.s(k + ".pkt"), name);
     };
     check("nil", [](TreeView<> &t) { t.nil(); });
     check("i32", [](TreeView<> &t) { (void)t.set({std::int32_t{42}}); });

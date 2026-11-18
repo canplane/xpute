@@ -7,8 +7,8 @@
 #include <utility>
 #include <vector>
 
-#include "xpute/kit/golden.hpp"
-#include "xpute/kit/test.hpp"
+#include "dev/test/golden.hpp"
+#include "dev/test/test.hpp"
 #include "arena.hpp"
 #include "deque.hpp"
 #include "heap.hpp"
@@ -17,7 +17,7 @@
 using namespace xpute;
 
 XPUTE_TEST(deque_matches_record) {
-    Golden v = Golden::load("spec/golden/collection/deque.tsv");
+    Golden v = Golden::load("kit/spec/golden/collection/deque.tsv");
     std::array<std::uint32_t, 8> buf{};
     Deque<std::uint32_t> d{buf};
     auto show = [](const std::uint32_t *x) { return x ? std::to_string(*x) : std::string("none"); };
@@ -45,13 +45,13 @@ XPUTE_TEST(deque_matches_record) {
 using E = Element<double, std::int32_t>;
 
 static std::string show(const E &e) {
-    // The record writes a key as Rust writes an f64 that is an integer: no
-    // decimal point.
+    // The record writes a key as Rust prints an `f64` that holds an integer,
+    // without a decimal point.
     return std::to_string(static_cast<long long>(e.key)) + ":" + std::to_string(e.val);
 }
 
 XPUTE_TEST(heap_matches_record) {
-    Golden v = Golden::load("spec/golden/collection/heap.tsv");
+    Golden v = Golden::load("kit/spec/golden/collection/heap.tsv");
     std::vector<E> a, b;
     v.each("steps", [&](const std::string &k) {
         if (v.s(k + ".op") == "pop") {
@@ -78,13 +78,14 @@ XPUTE_TEST(heap_matches_record) {
 namespace {
 
 struct Slot {
-    // What a slot owns and keeps across a rewind: a vector's buffer is still
+    // A slot keeps what it owns across a rewind: its vector's buffer is still
     // allocated when the slot is handed out again.
     std::vector<std::uint32_t> items;
     std::uint32_t mark = 0;
 };
 
-// A test is a host's program, so its arena may take the system's memory.
+// A test runs as an ordinary program, not inside a guest, so its arena may
+// take the system's heap.
 using SlotArena = Arena<Slot, std::allocator<Slot>>;
 
 SlotArena arena(std::uint32_t init_cap, std::uint32_t max_cap) {
@@ -153,7 +154,8 @@ XPUTE_TEST(arena_scope_rewinds) {
 
 namespace {
 
-// Counts the values it ends, so a test sees each live one dropped once.
+// Counts each value it destroys, so a test can see that every live value is
+// destroyed exactly once.
 struct Counted {
     int n;
     int *ended;

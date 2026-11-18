@@ -5,7 +5,7 @@
 #include <tuple>
 #include <vector>
 
-#include "xpute/kit/test.hpp"
+#include "dev/test/test.hpp"
 #include "buddy_tree.hpp"
 #include "slab.hpp"
 
@@ -17,8 +17,8 @@ constexpr std::size_t MIN = 12;
 constexpr std::size_t MAX = 20;
 constexpr std::size_t PAGE = std::size_t{1} << MIN;
 
-// Memory the test owns, so a block can be written and read back, which is how
-// an overlap shows.
+// Memory the test owns, so a block can be filled and read back; a block that
+// another one wrote over shows an overlap.
 template <int Tag> struct TestRange {
     static constexpr std::size_t MIN_LOG2 = MIN;
     static constexpr std::size_t MAX_LOG2 = MAX;
@@ -87,7 +87,7 @@ XPUTE_TEST(buddy_oversize_refused) {
         served++;
         XPUTE_CHECK(served <= (std::size_t{1} << (MAX - MIN)) + 1);
     }
-    XPUTE_CHECK(heap.live() <= heap.range_bytes());
+    XPUTE_CHECK(heap.live() <= heap.range_sz());
     XPUTE_CHECK_EQ(all(first, PAGE, 0x5a), true, "a refusal wrote over a live block");
 }
 
@@ -140,7 +140,8 @@ XPUTE_TEST(slab_empty_run_returned) {
         XPUTE_CHECK(p != nullptr);
         live.push_back(p);
     }
-    // The one that made a second run goes back first.
+    // The last slot is the second run's only one. Freeing it first gives the
+    // second run back and leaves the first run's slots.
     heap.dealloc(live.back(), 24, 8);
     live.pop_back();
     XPUTE_CHECK_EQ(heap.pages().live(), one_run, "the second run did not go back");
@@ -169,7 +170,7 @@ XPUTE_TEST(slab_slots_inside_runs) {
     auto check = [] {
         XPUTE_CHECK(heap.slot_live() <= heap.run_live());
         XPUTE_CHECK(heap.run_live() <= heap.pages().live());
-        XPUTE_CHECK(heap.pages().live() <= heap.range_bytes());
+        XPUTE_CHECK(heap.pages().live() <= heap.range_sz());
     };
     for (int round = 0; round < 4; round++) {
         for (std::size_t k = 0; k < 7; k++) {

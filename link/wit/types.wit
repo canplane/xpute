@@ -1,0 +1,89 @@
+// xpute's link in WIT's shape; the execution meaning is xpute's (xpute-link
+// link.rs). WIT's grammar is used as far as xpute needs it: interfaces, `func`
+// and `async func`, resources and their methods, records, enums, variants,
+// lists, options, results, bool, the integers of every width, f32, f64 and
+// strings.
+//
+// Whatever is called is an object, under a handle. A singleton interface's is
+// named: `frame.json5`'s `NAMED` bit and the hash of its package and its name,
+// ("xpute:clocks", "monotonic-clock"), which the generator writes on both
+// sides, so it is called with no open. A resource's the side that implements
+// it issues, opened by a URI: a tuple of tokens, each an s32 or a string, as a
+// file's are the program's path tokens; or answered by a function that returns
+// it. A frame's command carries the handle, the method's number and the `RES`
+// bit (31): the handle in bits 8..30, the method in bits 0..7. A method's
+// number is its place in its interface, in declaration order: a singleton
+// interface's functions, or one resource's methods.
+//
+// The root, handle 0, has three methods. `open(uri) -> handle`, number 0, the
+// implementing side answers at once from the opener mounted at the URI's
+// longest matching leading tokens. An open is pipelined, so a missing file
+// opens, and its first method with a result answers `no-entry`. `cancel(tag)`,
+// number 1, cancels a call the sender has pending (`frame.json5` `CANCEL`).
+// `open-at(handle, k, uri)`, number 2, opens an object under a handle the
+// sender issued, by the receiver's `k`th opener: what a runtime that stands in
+// for a UI on another thread sends that UI's end once it has answered the
+// guest's open (`frame.json5` `OPEN_AT`).
+// Every handle has a drop, method 0xFF, as the component model's resource
+// drop, which takes no result and lets the object go; a resource whose end
+// must report a result keeps its own method for it, as a file's `close`.
+//
+// A guest has three exports. `link_init` lays the link and answers its layout,
+// the inbox and a frame's cap, and runs nothing of the program. `link_boot` is
+// the guest's first entry: the program's boot mounts its implementations, and
+// only then does the entry start. An interface is called by its named handle
+// with no open (`frame.json5` `NAMED`), so a bug in a boot is reported through
+// the stop at once. `link_in` enters the guest with the frame laid in its
+// inbox. The host calls init, reads the layout, then boot, so every entry
+// comes from a host that knows the cap. A trap out of any export stops the
+// guest for good.
+//
+// A method that may answer later is an `async func`, and is sent; any other
+// always answers at once. An `async func` always answers later, with
+// EINPROGRESS, so waiting on one leaves the guest's entry. The guest runs only
+// when the host enters it: with a request, an answer, or the answer of what it
+// armed, such as `monotonic-clock.wait-for`.
+//
+// Raw memory enters WIT in one place, `xpute:link/types.lent`: a borrow, in the
+// component model's sense, of a buffer in the caller's memory, (buf, nbyte), valid
+// until the answer; an empty buffer has no address, and is (0, 0). Its address
+// is a u64 on every platform, one layout everywhere: a module's offset into
+// its own memory, a native guest's pointer. The data stays
+// where it is and only its place crosses; the callee reads or writes it there.
+// The caller's binding takes a buffer it owns, lends it with the call and hands
+// it back with the answer, so the borrow lasts as long as the ownership. A call
+// dropped before its answer is canceled (`frame.json5` `CANCEL`), as the
+// component model cancels a dropped subtask, and keeps the buffer alive until
+// its answer, ECANCELED or its own, comes.
+//
+// A packet lays its values out as the Component Model's Canonical ABI does
+// (xpute-link cabi.rs): a call's args as one tuple, an answer's value alone,
+// each value at its type's alignment, an enum, an option or a result as a
+// variant, its discriminant first. A string's or a list's bytes lie past the
+// packet's fixed part, its pointer an offset from the packet's start, where
+// the ABI copies them into the callee's memory; a lent buffer stays where it
+// is. The answer's result is a status: 0, EINPROGRESS, the errno the call
+// was refused with, by the link or by the method as a caller's bug (EINVAL,
+// where the ABI traps), or a method's errno where its WIT has no `result`; a
+// method with a `result` answers any other failure as its error case.
+// TypeScript's null is an option's none, so no option holds an option.
+//
+// The link's crossings (xpute-guest link.rs) are no world's: a world holds
+// only interfaces, and a program's world only those it uses.
+
+package xpute:link@0.1.0;
+
+// What the link itself takes.
+interface types {
+  // A URI's token.
+  variant token {
+    int(s32),
+    str(string),
+  }
+
+  // A borrow of a buffer in the caller's memory, valid until the answer.
+  record lent {
+    buf: u64,
+    nbyte: u32,
+  }
+}

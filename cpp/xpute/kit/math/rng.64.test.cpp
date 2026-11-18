@@ -3,18 +3,18 @@
 #include <bit>
 #include <string>
 
-#include "xpute/kit/golden.hpp"
-#include "xpute/kit/test.hpp"
+#include "dev/test/golden.hpp"
+#include "dev/test/test.hpp"
 #include "rng.hpp"
 
 using namespace xpute;
 
 XPUTE_TEST(rng_matches_record) {
-    Golden v = Golden::load("spec/golden/math/rng.64.tsv");
+    Golden v = Golden::load("kit/spec/golden/math/rng.64.tsv");
     v.each("", [&v](const std::string &k) {
         std::uint64_t seed = v.u64(k + ".seed");
         XPUTE_CHECK_EQ(mix64(seed), v.u64(k + ".mix64"), (k + ".mix64").c_str());
-        XPUTE_CHECK_EQ(derive_seed_u64(seed, 77), v.u64(k + ".derive"), (k + ".derive").c_str());
+        XPUTE_CHECK_EQ(seed_mix64(seed, 77), v.u64(k + ".derive"), (k + ".derive").c_str());
         SplitMix64 stream(seed);
         v.each(k + ".draws", [&](const std::string &d) {
             std::uint32_t got = stream.next_u32();

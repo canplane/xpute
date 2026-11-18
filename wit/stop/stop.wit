@@ -1,0 +1,8 @@
+package xpute:stop@0.1.0;
+
+// A broken invariant, which the host implements and the guest calls once,
+// before it stops: its errno, where in the source, up to two numbers, and an
+// optional message, the bug's own or that of a panic the language raised.
+interface stop {
+  stopped: func(errnum: s32, file: string, line: u32, n1: u64, n2: u64, msg: option<string>);
+}

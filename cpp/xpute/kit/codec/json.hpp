@@ -1,6 +1,8 @@
 // cpp/xpute/kit/codec/json.hpp
 
-// JSON checked once and read where it lies, with nothing allocated.
+// A JSON reader that allocates nothing. `read_json` checks a text against
+// JSON's grammar once; the values it hands out are then read in place, and no
+// tree is built. `quoted` writes a string as a JSON string.
 
 #pragma once
 
@@ -21,26 +23,29 @@ void push_utf8(std::uint32_t c, char *out, std::size_t &n) noexcept;
 
 enum class JsonType : std::uint8_t { null, boolean, number, string, array, object };
 
-// A lone surrogate reads as U+FFFD.
-class JsonChars {
+// The characters of a `JsonStr`, its escapes decoded. A `\u` escape of a lone
+// surrogate reads as U+FFFD.
+class JsonCharIter {
   public:
-    explicit JsonChars(std::string_view rest) noexcept : rest_(rest) {}
+    explicit JsonCharIter(std::string_view rest) noexcept : rest_(rest) {}
     std::optional<char32_t> next() noexcept;
 
   private:
     std::string_view rest_;
 };
 
-// Escapes as written, decoded as they are read.
+// A JSON string as it stands in the text, without its quotes. Its escapes are
+// decoded only as its characters are read.
 class JsonStr {
   public:
     explicit JsonStr(std::string_view raw) noexcept : raw_(raw) {}
-    // None when it holds an escape.
+    // This answers the string as it stands, or none when it holds an escape
+    // and must be decoded.
     std::optional<std::string_view> as_plain() const noexcept;
-    JsonChars chars() const noexcept { return JsonChars(raw_); }
+    JsonCharIter chars() const noexcept { return JsonCharIter(raw_); }
     bool eq_str(std::string_view s) const noexcept;
     template <class S> void decode_into(S &out) const {
-        JsonChars c = chars();
+        JsonCharIter c = chars();
         while (std::optional<char32_t> ch = c.next()) {
             char buf[4];
             std::size_t n = 0;
@@ -54,8 +59,8 @@ class JsonStr {
     std::string_view raw_;
 };
 
-class JsonItems;
-class JsonFields;
+class JsonItemIter;
+class JsonFieldIter;
 
 class JsonValue {
   public:
@@ -64,49 +69,52 @@ class JsonValue {
     std::optional<bool> as_bool() const noexcept;
     std::optional<double> as_f64() const noexcept;
     std::optional<JsonStr> as_str() const noexcept;
-    JsonItems items() const noexcept;
-    // A key given twice is given twice.
-    JsonFields fields() const noexcept;
-    // The last field of that name, as the host's parse keeps.
+    JsonItemIter items() const noexcept;
+    // Every field in the text's order; a key that appears twice is yielded
+    // twice.
+    JsonFieldIter fields() const noexcept;
+    // The last field with that key, which is the one the runtime's
+    // `JSON.parse` keeps.
     std::optional<JsonValue> get(std::string_view key) const noexcept;
     std::optional<JsonValue> at(std::size_t idx) const noexcept;
     std::string_view text() const noexcept { return s_; }
 
   private:
     friend std::optional<JsonValue> read_json(std::string_view) noexcept;
-    friend class JsonItems;
-    friend class JsonFields;
+    friend class JsonItemIter;
+    friend class JsonFieldIter;
     explicit JsonValue(std::string_view s) noexcept : s_(s) {}
     std::string_view s_;
 };
 
-class JsonItems {
+class JsonItemIter {
   public:
     std::optional<JsonValue> next() noexcept;
 
   private:
     friend class JsonValue;
-    JsonItems(std::string_view s, std::size_t at) noexcept : s_(s), at_(at) {}
+    JsonItemIter(std::string_view s, std::size_t at) noexcept : s_(s), at_(at) {}
     std::string_view s_;
     std::size_t at_;
 };
 
-class JsonFields {
+class JsonFieldIter {
   public:
     std::optional<std::pair<JsonStr, JsonValue>> next() noexcept;
 
   private:
     friend class JsonValue;
-    JsonFields(std::string_view s, std::size_t at) noexcept : s_(s), at_(at) {}
+    JsonFieldIter(std::string_view s, std::size_t at) noexcept : s_(s), at_(at) {}
     std::string_view s_;
     std::size_t at_;
 };
 
-// None where the text holds anything but one value.
+// The one value the text holds, or none when the text is not exactly one JSON
+// value with only whitespace around it.
 std::optional<JsonValue> read_json(std::string_view text) noexcept;
 
-// Control characters other than \n, \r and \t as `\u00XX`, as
-// `JSON.stringify` writes them.
+// Writes `s` as a JSON string, as `JSON.stringify` writes one: a control
+// character other than \n, \r and \t becomes `\u00XX`.
 template <class Put> void quoted(std::string_view s, Put &&put) {
     static constexpr char HEX[] = "0123456789abcdef";
     put(std::string_view("\""));
